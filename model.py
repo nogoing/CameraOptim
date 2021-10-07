@@ -76,7 +76,7 @@ class TransformerEncoder(nn.Module):
         self.dropout_2 = nn.Dropout(0.1)
 
         self.layer_norm_1 = nn.LayerNorm(c_in)
-        self.layer_norm_2 = nn.LayerNorm(c_in)
+        self.layer_norm_2 = nn.LayerNorm(c_out)
 
         self.two_layer_MLP = nn.sequential(
             nn.Linear(c_in, c_in),
