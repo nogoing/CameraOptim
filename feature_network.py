@@ -3,6 +3,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 import torchvision.models as models
 
+# 입력으로 받은 소스뷰의 (ResNet feature + Image Color + Segmentation mask)
 class FeatureNet(nn.Module):
     def __init__(self):
         super(FeatureNet, self).__init__()
@@ -23,8 +24,9 @@ class FeatureNet(nn.Module):
         self.conv1x1_2 = nn.Conv2d(128, 32, (1, 1))
         self.conv1x1_3 = nn.Conv2d(256, 32, (1, 1))
 
-    def forward(self, img):
+    def forward(self, img, mask):
         feature_maps = []
+        orig_img = img
 
         for i, layer in enumerate(self.feature_layers):
             img = layer(img)
@@ -46,4 +48,11 @@ class FeatureNet(nn.Module):
                 feature_map = F.normalize(feature_map, p=2, dim=1)
                 feature_maps.append(feature_map)
 
-        return feature_maps
+        feature_maps.append(orig_img)
+        feature_maps.append(mask)
+        
+        # feature_maps = [ResNet Features, RGB Image, Segmentation Mask]
+        # 각 feature의 shape은 (1, C, H, W) ?
+        feature_map = torch.cat(feature_maps, dim=1))   # 채널 기준으로 이어붙임.
+
+        return feature_map
