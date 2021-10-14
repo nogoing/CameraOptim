@@ -20,7 +20,7 @@ ray_sampler = MonteCarloRaysampler(
     image_width=-1.0,
     image_heignt=1.0,
     n_rays_per_iamge=800,
-    n_pts_per_ray=128,
+    n_pts_per_ray=32,
     min_depth=0.3,
     max_depth=3.0,
 )
@@ -52,6 +52,13 @@ for iter in range(10000):
 
     gt_pixels = sample_images_at_locations(gt_images[batch_idx], sampled_rays.xys)
 
-    loss = (rendered_pixels - gt_pixels).abs().mean()
-    loss.backward()
+    # 기존 NeRF의 original loss
+    rgb_mse_loss = (rendered_pixels - gt_pixels).abs().mean()
+    # Nerformer에서 새롭게 추가한 loss
+    # 렌더링된 알파 마스크와 GT 마스크 사이의 BCE loss
+    bce_loss = torch.nn.BCELoss(mask, gt_mask)
+    
+    total_loss = rgb_mse_loss + bce_loss
+    total_loss.backward()
+
     optim.step()
