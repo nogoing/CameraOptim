@@ -80,7 +80,7 @@ class RaySampler(object):
             v = v.reshape(-1)
 
             select_inds = rng.choice(u.shape[0], size=(N_rand,), replace=False)
-            select_inds = v[select_inds] + W * u[select_inds]
+            select_inds = v[select_inds] + self.W * u[select_inds]
 
         elif sample_mode == 'uniform':
             # Random from one image
