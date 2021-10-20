@@ -24,9 +24,10 @@ class FeatureNet(nn.Module):
         self.conv1x1_2 = nn.Conv2d(128, 32, (1, 1))
         self.conv1x1_3 = nn.Conv2d(256, 32, (1, 1))
 
-    def forward(self, img, mask):
+    def forward(self, img):
         feature_maps = []
         orig_img = img
+        h, w = img.shape[-2:]
 
         for i, layer in enumerate(self.feature_layers):
             img = layer(img)
@@ -34,28 +35,28 @@ class FeatureNet(nn.Module):
             # Upsampling > 1x1 Conv2D (32ch) > l2 normaliation of the feature column
             # after layer 1
             if i == 4:
-                feature_map = nn.Upsample(scale_factor=4, mode='bilinear')(img)
+                feature_map = nn.Upsample((h, w), mode='bilinear')(img)
                 feature_map = self.conv1x1_1(feature_map)
                 feature_map = F.normalize(feature_map, p=2, dim=1)
                 feature_maps.append(feature_map)
             # after layer 2
             elif i == 5:
-                feature_map = nn.Upsample(scale_factor=8, mode='bilinear')(img)
+                feature_map = nn.Upsample((h, w), mode='bilinear')(img)
                 feature_map = self.conv1x1_2(feature_map)
                 feature_map = F.normalize(feature_map, p=2, dim=1)
                 feature_maps.append(feature_map)
             # after layer 3
             elif i == 6:
-                feature_map = nn.Upsample(scale_factor=16, mode='bilinear')(img)
+                feature_map = nn.Upsample((h, w), mode='bilinear')(img)
                 feature_map = self.conv1x1_3(feature_map)
                 feature_map = F.normalize(feature_map, p=2, dim=1)
                 feature_maps.append(feature_map)
 
         feature_maps.append(orig_img)
-        feature_maps.append(mask)
+        # feature_maps.append(mask)
         
         # feature_maps = [ResNet Features, RGB Image, Segmentation Mask]
         # 각 feature의 shape은 (1, C, H, W) ?
-        feature_map = torch.cat(feature_maps, dim=1)   # 채널 기준으로 이어붙임.
+        resnet_feature = torch.cat(feature_maps, dim=1)   # 채널 기준으로 이어붙임.
 
-        return feature_map
+        return resnet_feature
