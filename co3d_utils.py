@@ -2,7 +2,6 @@ import torch
 import os
 import numpy as np
 import json, gzip
-from collections import OrderedDict
 
 
 
@@ -21,7 +20,8 @@ def generate_co3d_json_file(root_path):
         frame_dicts = json.load(frame_zipfile)
 
         seq_name_prev = frame_dicts[0]["sequence_name"]
-        json_data = OrderedDict()
+
+        json_data = []
         for frame_dict in (frame_dicts):
             seq_name = frame_dict["sequence_name"]
             
@@ -30,21 +30,22 @@ def generate_co3d_json_file(root_path):
                     with open(os.path.join(category_path, seq_name_prev, "frame_annotations_file.json"), 'w', encoding="utf-8") as f:
                         json.dump(json_data, f, ensure_ascii=False, indent="\t")
                 
-                json_data = OrderedDict()
+                json_data = []
                 seq_name_prev = seq_name
 
             frame_number = frame_dict["frame_number"]
-            json_data[frame_number] = {
+
+            json_data.append({
                 "frame_number" : frame_dict["frame_number"],
                 "frame_timestamp" : frame_dict["frame_timestamp"],
                 "image" : frame_dict["image"],
                 "depth" : frame_dict["depth"],
                 "mask" : frame_dict["mask"],
                 "viewpoint" : frame_dict["viewpoint"]
-            }
+            })
 
 
-def get_w2c_intrinsic(viewpoint):
+def get_w2c_intrinsic(img_size, viewpoint):
     rotation = torch.tensor(viewpoint['R'])
     translation =  torch.tensor(viewpoint['T'])
     
@@ -58,10 +59,21 @@ def get_w2c_intrinsic(viewpoint):
     focal_length =  torch.tensor(viewpoint["focal_length"])
     principal_point =  torch.tensor(viewpoint["principal_point"])
 
-    intrinsic = torch.eye(4)
+    # principal point and focal length in pixels
+    half_image_size_wh_orig = torch.tensor([x/2 for x in img_size])
+    principal_point_px = -1.0 * (principal_point - 1.0) * half_image_size_wh_orig
+    focal_length_px = focal_length * half_image_size_wh_orig
+    # if self.box_crop:
+    #     assert clamp_bbox_xyxy is not None
+    #     principal_point_px -= clamp_bbox_xyxy[:2]
 
-    intrinsic[0][0], intrinsic[1][1] = focal_length
-    intrinsic[0][2], intrinsic[1][2] = principal_point
+    # # rescaled principal point and focal length in ndc
+    # principal_point = 1 - principal_point_px * scale / half_image_size_wh_output
+    # focal_length = focal_length_px * scale / half_image_size_wh_output
+
+    intrinsic = torch.eye(4)
+    intrinsic[0][2], intrinsic[1][2] = principal_point_px
+    intrinsic[0][0], intrinsic[1][1] = focal_length_px
 
     return c2w, intrinsic
 
@@ -76,13 +88,22 @@ def read_seq_data(seq_path):
     seq_c2w_mats = []        # extrinsics
     seq_intrinsic_mats = []
 
+    translation_bd = float("-inf")
     for frame in frames:
         seq_imgs.append(frame["image"]["path"])
         
-        c2w, intrinsic = get_w2c_intrinsic(frame["viewpoint"])
+        c2w, intrinsic = get_w2c_intrinsic(frame["image"]["size"], frame["viewpoint"])
+
+        bd = torch.abs(c2w[:3, 3]).max()
+        if bd > translation_bd:
+            translation_bd = bd
+        
         seq_c2w_mats.append(c2w)
         
         seq_intrinsic_mats.append(intrinsic)
+    
+    for c2w in seq_c2w_mats:
+        c2w[:3, 3] /= translation_bd
 
     return seq_imgs, seq_c2w_mats, seq_intrinsic_mats
 

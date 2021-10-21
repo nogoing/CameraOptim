@@ -46,12 +46,12 @@ class RaySampler(object):
         # v --> y 인덱싱
         u, v = np.meshgrid(np.arange(W)[::render_stride], np.arange(H)[::render_stride])
 
-        # 이미지의 각 row들이 이어붙은 형태로 변환
+        # 이미지의 각 row들이 한 줄로 이어붙은 형태로 변환
         # (H, W) --> (H*W)
         u = u.reshape(-1).astype(dtype=np.float32)  # + 0.5    # add half pixel
         v = v.reshape(-1).astype(dtype=np.float32)  # + 0.5
 
-        pixels = np.stack((u, v, np.ones_like(u)), axis=0)  # [3(x+y+z), H*W]
+        pixels = np.stack((u, v, np.ones_like(u)), axis=0)  # [3(x+y+z), H*W]? 아니면 homogeneous coordinate라 1을 추가한 건지?
         pixels = torch.from_numpy(pixels)
         batched_pixels = pixels.unsqueeze(0).repeat(self.batch_size, 1, 1)
 
