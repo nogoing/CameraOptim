@@ -1,3 +1,4 @@
+from matplotlib.pyplot import bar_label
 import torch
 import os
 import numpy as np
@@ -33,8 +34,6 @@ def generate_co3d_json_file(root_path):
                 json_data = []
                 seq_name_prev = seq_name
 
-            frame_number = frame_dict["frame_number"]
-
             json_data.append({
                 "frame_number" : frame_dict["frame_number"],
                 "frame_timestamp" : frame_dict["frame_timestamp"],
@@ -45,7 +44,7 @@ def generate_co3d_json_file(root_path):
             })
 
 
-def get_w2c_intrinsic(img_size, viewpoint):
+def get_c2w_intrinsic(img_size, viewpoint):
     rotation = torch.tensor(viewpoint['R'])
     translation =  torch.tensor(viewpoint['T'])
     
@@ -85,14 +84,17 @@ def read_seq_data(seq_path):
         frames = json.load(f)
 
     seq_imgs = []
+    seq_masks = []
     seq_c2w_mats = []        # extrinsics
     seq_intrinsic_mats = []
 
     translation_bd = float("-inf")
+    bd_factor = 0.1
     for frame in frames:
         seq_imgs.append(frame["image"]["path"])
+        seq_masks.append(frame["mask"]["path"])
         
-        c2w, intrinsic = get_w2c_intrinsic(frame["image"]["size"], frame["viewpoint"])
+        c2w, intrinsic = get_c2w_intrinsic(frame["image"]["size"], frame["viewpoint"])
 
         bd = torch.abs(c2w[:3, 3]).max()
         if bd > translation_bd:
@@ -102,15 +104,17 @@ def read_seq_data(seq_path):
         
         seq_intrinsic_mats.append(intrinsic)
     
+    translation_bd += translation_bd * bd_factor
     for c2w in seq_c2w_mats:
         c2w[:3, 3] /= translation_bd
 
-    return seq_imgs, seq_c2w_mats, seq_intrinsic_mats
+    return seq_imgs, seq_masks, seq_c2w_mats, seq_intrinsic_mats
 
 
 # 하나의 category (= 해당 카테고리 내 모든 오브젝트) data를 읽어오는 함수
 def read_category_data(category_path):
     category_imgs = []
+    category_masks = []
     category_c2w_mats = []
     category_intrinsic_mats = []
 
@@ -126,13 +130,14 @@ def read_category_data(category_path):
 
     for seq_name in choosen_seqs:
         seq_path = os.path.join(category_path, seq_name)
-        seq_imgs, seq_c2w_mats, seq_intrinsic_mats = read_seq_data(seq_path)
+        seq_imgs, seq_masks, seq_c2w_mats, seq_intrinsic_mats = read_seq_data(seq_path)
 
         category_imgs.extend(seq_imgs)
+        category_masks.extend(seq_masks)
         category_c2w_mats.extend(seq_c2w_mats)
         category_intrinsic_mats.extend(seq_intrinsic_mats)
 
-    return category_imgs, category_c2w_mats, category_intrinsic_mats
+    return category_imgs, category_masks, category_c2w_mats, category_intrinsic_mats
 
 
 def rectify_inplane_rotation(src_pose, tar_pose, src_img, th=40):
