@@ -63,7 +63,8 @@ class Projector():
         # (x, y, z) ---> (x, y, z, 1) : Homogeneous Coordinate로 변환.
         xyz_h = torch.cat([xyz, torch.ones_like(xyz[..., :1])], dim=-1)  # [n_points, 4]
 
-        # P_proj = K x [R|t]_inv x P
+        # P_proj = K x c2w_inv(=w2c) x P
+        # 소스뷰는 자신의 extrinsic(c2w_inverse)와 intrinsic을 곱하여 이미지 스페이스로 가져옴
         projections = train_intrinsics.bmm(torch.inverse(train_poses)) \
             .bmm(xyz_h.t()[None, ...].repeat(num_views, 1, 1))  # [n_views, 4, n_points]
 

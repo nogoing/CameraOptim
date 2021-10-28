@@ -1,7 +1,7 @@
-from matplotlib.pyplot import bar_label
 import torch
 import os
 import numpy as np
+import cv2
 import json, gzip
 
 
@@ -78,7 +78,7 @@ def get_c2w_intrinsic(img_size, viewpoint):
 
 
 # 하나의 sequence (= 오브젝트 한 개) data를 읽어오는 함수
-def read_seq_data(seq_path):
+def read_seq_data(seq_path, normalization=True):
     frame_annotations_file = os.path.join(seq_path, "frame_annotations_file.json")
     with open(frame_annotations_file, 'r') as f:
         frames = json.load(f)
@@ -88,31 +88,47 @@ def read_seq_data(seq_path):
     seq_c2w_mats = []        # extrinsics
     seq_intrinsic_mats = []
 
-    translation_bd = float("-inf")
-    bd_factor = 0.1
+    xs = []
+    ys = []
+    zs = []
+
     for frame in frames:
         seq_imgs.append(frame["image"]["path"])
         seq_masks.append(frame["mask"]["path"])
         
         c2w, intrinsic = get_c2w_intrinsic(frame["image"]["size"], frame["viewpoint"])
 
-        bd = torch.abs(c2w[:3, 3]).max()
-        if bd > translation_bd:
-            translation_bd = bd
+        # max_ = c2w[:3, 3].max()
+        # if max_ > max_bd:
+        #     max_bd = max_
+        # min_ = c2w[:3, 3].min()
+        # if min_ < min_bd:
+        #     min_bd = min_
+        if (normalization):
+            xs.append(c2w[0, 3].item())
+            ys.append(c2w[1, 3].item())
+            zs.append(c2w[2, 3].item())
         
         seq_c2w_mats.append(c2w)
         
         seq_intrinsic_mats.append(intrinsic)
     
-    translation_bd += translation_bd * bd_factor
-    for c2w in seq_c2w_mats:
-        c2w[:3, 3] /= translation_bd
+    if (normalization):
+        x_bd = [min(xs), max(xs)]
+        y_bd = [min(ys), max(ys)]
+        z_bd = [min(zs), max(zs)]
+        for c2w in seq_c2w_mats:
+            c2w[0, 3] = 2*((c2w[0, 3] - x_bd[0])/(x_bd[1] - x_bd[0])) - 1
+            c2w[1, 3] = 2*((c2w[1, 3] - y_bd[0])/(y_bd[1] - y_bd[0])) - 1
+            c2w[2, 3] = 2*((c2w[2, 3] - z_bd[0])/(z_bd[1] - z_bd[0])) - 1
+        # for c2w in seq_c2w_mats:
+        #     c2w[:3, 3] = 2*((c2w[:3, 3] - min_bd)/(max_bd - min_bd)) - 1
 
     return seq_imgs, seq_masks, seq_c2w_mats, seq_intrinsic_mats
 
 
 # 하나의 category (= 해당 카테고리 내 모든 오브젝트) data를 읽어오는 함수
-def read_category_data(category_path):
+def read_category_data(category_path, normalization=True):
     category_imgs = []
     category_masks = []
     category_c2w_mats = []
@@ -130,7 +146,7 @@ def read_category_data(category_path):
 
     for seq_name in choosen_seqs:
         seq_path = os.path.join(category_path, seq_name)
-        seq_imgs, seq_masks, seq_c2w_mats, seq_intrinsic_mats = read_seq_data(seq_path)
+        seq_imgs, seq_masks, seq_c2w_mats, seq_intrinsic_mats = read_seq_data(seq_path, normalization)
 
         category_imgs.extend(seq_imgs)
         category_masks.extend(seq_masks)
@@ -138,6 +154,75 @@ def read_category_data(category_path):
         category_intrinsic_mats.extend(seq_intrinsic_mats)
 
     return category_imgs, category_masks, category_c2w_mats, category_intrinsic_mats
+
+
+# Roation matrix 사이의 angular distance를 측정
+TINY_NUMBER = 1e-6
+def batched_angular_dist_rot_matrix(R1, R2):
+    '''
+    calculate the angular distance between two rotation matrices (batched)
+    :param R1: the first rotation matrix [N, 3, 3]
+    :param R2: the second rotation matrix [N, 3, 3]
+    :return: angular distance in radiance [N, ]
+    '''
+    assert R1.shape[-1] == 3 and R2.shape[-1] == 3 and R1.shape[-2] == 3 and R2.shape[-2] == 3
+    return np.arccos(np.clip((np.trace(np.matmul(R2.transpose(0, 2, 1), R1), axis1=1, axis2=2) - 1) / 2.,
+                             a_min=-1 + TINY_NUMBER, a_max=1 - TINY_NUMBER))
+
+
+# 두 벡터(두 카메라의 위치) 사이의 거리를 측정
+def angular_dist_between_2_vectors(vec1, vec2):
+    vec1_unit = vec1 / (np.linalg.norm(vec1, axis=1, keepdims=True) + TINY_NUMBER)
+    vec2_unit = vec2 / (np.linalg.norm(vec2, axis=1, keepdims=True) + TINY_NUMBER)
+    angular_dists = np.arccos(np.clip(np.sum(vec1_unit*vec2_unit, axis=-1), -1.0, 1.0))
+    
+    return angular_dists
+
+
+def get_nearest_src(tgt_pose, src_poses, num_select, tgt_id=-1, angular_dist_method='vector',
+                         scene_center=(0, 0, 0)):
+    '''
+    Args:
+        tgt_pose: target pose [3, 3] ?? [3, 4]여야 하는거 아닌가
+        src_poses: reference poses [N, 3, 3] ?? 이것도 [N, 3, 4]...
+        num_select: the number of nearest views to select
+    Returns: the selected indices
+    '''
+    num_cams = len(src_poses)
+    num_select = min(num_select, num_cams-1)
+    batched_tgt_pose = tgt_pose[None, ...].repeat(num_cams, 0)
+
+    # 타겟뷰와 소스뷰의 유사성 판단 메소드 : matrix / vector / dist
+    if angular_dist_method == 'matrix':
+        dists = batched_angular_dist_rot_matrix(batched_tgt_pose[:, :3, :3], src_poses[:, :3, :3])
+    elif angular_dist_method == 'vector':
+        # 타겟뷰와 소스뷰의 translation 값을 가져옴
+        tgt_cam_locs = batched_tgt_pose[:, :3, 3]
+        ref_cam_locs = src_poses[:, :3, 3]
+        # 씬의 중앙으로부터 각 뷰가 떨어진 거리를 측정
+        scene_center = np.array(scene_center)[None, ...]
+        tar_vectors = tgt_cam_locs - scene_center
+        ref_vectors = ref_cam_locs - scene_center
+        # 이 거리들 사이의 차이를 측정
+        dists = angular_dist_between_2_vectors(tar_vectors, ref_vectors)
+    # 단순히 타겟뷰와 소스뷰의 translation 차이를 측정
+    elif angular_dist_method == 'dist':
+        tgt_cam_locs = batched_tgt_pose[:, :3, 3]
+        ref_cam_locs = src_poses[:, :3, 3]
+        dists = np.linalg.norm(tgt_cam_locs - ref_cam_locs, axis=1)
+    else:
+        raise Exception('unknown angular distance calculation method!')
+
+    if tgt_id >= 0:
+        assert tgt_id < num_cams
+        dists[tgt_id] = 1e3  # 타겟뷰는 선택되지 않도록 방지한다.
+
+    # dists 값이 작은 순으로 "인덱스"를 정렬
+    sorted_ids = np.argsort(dists)
+    # 정렬된 인덱스를 소스뷰 개수만큼 선택
+    selected_ids = sorted_ids[:num_select]
+
+    return selected_ids
 
 
 def rectify_inplane_rotation(src_pose, tar_pose, src_img, th=40):
@@ -161,64 +246,3 @@ def rectify_inplane_rotation(src_pose, tar_pose, src_img, th=40):
     rotated = cv2.warpAffine(src_img, M, (w, h), borderValue=(255, 255, 255), flags=cv2.INTER_LANCZOS4)
     rotated = rotated.astype(np.float32) / 255.
     return out_pose, rotated
-
-    
-TINY_NUMBER = 1e-6
-def batched_angular_dist_rot_matrix(R1, R2):
-    '''
-    calculate the angular distance between two rotation matrices (batched)
-    :param R1: the first rotation matrix [N, 3, 3]
-    :param R2: the second rotation matrix [N, 3, 3]
-    :return: angular distance in radiance [N, ]
-    '''
-    assert R1.shape[-1] == 3 and R2.shape[-1] == 3 and R1.shape[-2] == 3 and R2.shape[-2] == 3
-    return np.arccos(np.clip((np.trace(np.matmul(R2.transpose(0, 2, 1), R1), axis1=1, axis2=2) - 1) / 2.,
-                             a_min=-1 + TINY_NUMBER, a_max=1 - TINY_NUMBER))
-
-
-
-def angular_dist_between_2_vectors(vec1, vec2):
-    vec1_unit = vec1 / (np.linalg.norm(vec1, axis=1, keepdims=True) + TINY_NUMBER)
-    vec2_unit = vec2 / (np.linalg.norm(vec2, axis=1, keepdims=True) + TINY_NUMBER)
-    angular_dists = np.arccos(np.clip(np.sum(vec1_unit*vec2_unit, axis=-1), -1.0, 1.0))
-    
-    return angular_dists
-
-
-def get_nearest_src(tgt_pose, src_poses, num_select, tgt_id=-1, angular_dist_method='vector',
-                         scene_center=(0, 0, 0)):
-    '''
-    Args:
-        tar_pose: target pose [3, 3]
-        src_poses: reference poses [N, 3, 3]
-        num_select: the number of nearest views to select
-    Returns: the selected indices
-    '''
-    num_cams = len(src_poses)
-    num_select = min(num_select, num_cams-1)
-    batched_tgt_pose = tgt_pose[None, ...].repeat(num_cams, 0)
-
-    if angular_dist_method == 'matrix':
-        dists = batched_angular_dist_rot_matrix(batched_tgt_pose[:, :3, :3], src_poses[:, :3, :3])
-    elif angular_dist_method == 'vector':
-        tgt_cam_locs = batched_tgt_pose[:, :3, 3]
-        ref_cam_locs = src_poses[:, :3, 3]
-        scene_center = np.array(scene_center)[None, ...]
-        tar_vectors = tgt_cam_locs - scene_center
-        ref_vectors = ref_cam_locs - scene_center
-        dists = angular_dist_between_2_vectors(tar_vectors, ref_vectors)
-    elif angular_dist_method == 'dist':
-        tgt_cam_locs = batched_tgt_pose[:, :3, 3]
-        ref_cam_locs = src_poses[:, :3, 3]
-        dists = np.linalg.norm(tgt_cam_locs - ref_cam_locs, axis=1)
-    else:
-        raise Exception('unknown angular distance calculation method!')
-
-    if tgt_id >= 0:
-        assert tgt_id < num_cams
-        dists[tgt_id] = 1e3  # make sure not to select the target id itself
-
-    sorted_ids = np.argsort(dists)
-    selected_ids = sorted_ids[:num_select]
-
-    return selected_ids

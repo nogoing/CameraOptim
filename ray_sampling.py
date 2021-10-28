@@ -58,7 +58,6 @@ class RaySampler(object):
         # bmm : batch matrix-matrix product 
         # [B, N, M] tensor * [B, M, P] tensor >>> [B, N, P]
         rays_d = (c2w[:, :3, :3].bmm(torch.inverse(intrinsics[:, :3, :3])).bmm(batched_pixels)).transpose(1, 2)
-        # rays_d = (c2w[:, :3, :3].bmm(torch.inverse(intrinsics[:, :3, :3])).bmm(pixels)).transpose(1, 2)
         rays_d = rays_d.reshape(-1, 3)
         rays_o = c2w[:, :3, 3].unsqueeze(1).repeat(1, rays_d.shape[0], 1).reshape(-1, 3)  # B x HW x 3
         
@@ -115,9 +114,9 @@ class RaySampler(object):
                 'camera': self.camera.cuda(),
                 'depth_range': self.depth_range.cuda(),
                 'rgb': rgb.cuda() if rgb is not None else None,
-                'src_rgbs': self.src_rgbs.cuda() if self.src_rgbs is not None else None,
-                'src_cameras': self.src_cameras.cuda() if self.src_cameras is not None else None,
-                'selected_inds': select_inds
+                # 'src_rgbs': self.src_rgbs.cuda() if self.src_rgbs is not None else None,
+                # 'src_cameras': self.src_cameras.cuda() if self.src_cameras is not None else None,
+                # 'selected_inds': select_inds
         }
         
         return ret
