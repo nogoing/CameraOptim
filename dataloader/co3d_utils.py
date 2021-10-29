@@ -51,7 +51,7 @@ def get_c2w_intrinsic(img_size, viewpoint):
     extrinsic = torch.eye(4)
     extrinsic[:3, :3] = rotation
     extrinsic[:3, 3] = translation
-    
+    # extrinsic[1:3, :] *= -1.
     w2c = extrinsic
     c2w = torch.inverse(w2c)
     
