@@ -44,6 +44,23 @@ def generate_co3d_json_file(root_path):
             })
 
 
+def camera_position_scaling(seq_c2ws):
+    seq_c2ws = torch.stack(seq_c2ws)
+    seq_translations = seq_c2ws[:, :3, 3]
+
+    # 모든 카메라들의 center를 계산
+    camera_center = seq_translations.mean(dim=0)
+    # 모든 카메라의 x, y, z에 대해 center로부터 가장 멀리 떨어진 값을 찾음 --> 바운딩 박스의 반지름
+    offset = seq_translations.sub(camera_center).abs().max() + 0.05
+
+    # 바운딩 박스의 중심을 (0, 0, 0)으로 옮겨오고
+    seq_c2ws[:, :3, 3] -= camera_center
+    # offset으로 나누어 -1 ~ 1 범위로 normalize
+    seq_c2ws[:, :3, 3] /= offset
+
+    return list(seq_c2ws.unbind(dim=0))
+
+
 def get_c2w_intrinsic(img_size, viewpoint):
     rotation = torch.tensor(viewpoint['R'])
     translation =  torch.tensor(viewpoint['T'])
@@ -88,41 +105,17 @@ def read_seq_data(seq_path, normalization=True):
     seq_c2w_mats = []        # extrinsics
     seq_intrinsic_mats = []
 
-    xs = []
-    ys = []
-    zs = []
-
     for frame in frames:
         seq_imgs.append(frame["image"]["path"])
         seq_masks.append(frame["mask"]["path"])
         
         c2w, intrinsic = get_c2w_intrinsic(frame["image"]["size"], frame["viewpoint"])
-
-        # max_ = c2w[:3, 3].max()
-        # if max_ > max_bd:
-        #     max_bd = max_
-        # min_ = c2w[:3, 3].min()
-        # if min_ < min_bd:
-        #     min_bd = min_
-        if (normalization):
-            xs.append(c2w[0, 3].item())
-            ys.append(c2w[1, 3].item())
-            zs.append(c2w[2, 3].item())
         
         seq_c2w_mats.append(c2w)
-        
         seq_intrinsic_mats.append(intrinsic)
     
     if (normalization):
-        x_bd = [min(xs), max(xs)]
-        y_bd = [min(ys), max(ys)]
-        z_bd = [min(zs), max(zs)]
-        for c2w in seq_c2w_mats:
-            c2w[0, 3] = 2*((c2w[0, 3] - x_bd[0])/(x_bd[1] - x_bd[0])) - 1
-            c2w[1, 3] = 2*((c2w[1, 3] - y_bd[0])/(y_bd[1] - y_bd[0])) - 1
-            c2w[2, 3] = 2*((c2w[2, 3] - z_bd[0])/(z_bd[1] - z_bd[0])) - 1
-        # for c2w in seq_c2w_mats:
-        #     c2w[:3, 3] = 2*((c2w[:3, 3] - min_bd)/(max_bd - min_bd)) - 1
+        seq_c2w_mats = camera_position_scaling(seq_c2w_mats)
 
     return seq_imgs, seq_masks, seq_c2w_mats, seq_intrinsic_mats
 
