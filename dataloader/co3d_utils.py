@@ -1,9 +1,8 @@
-import torch
 import os
 import numpy as np
 import cv2
 import json, gzip
-
+from scipy.spatial.transform import Rotation as R
 
 
 # 특정 카테고리 안의 n개 오브젝트에 대한 프레임 시퀀스가 전부 하나의 파일에 저장되어 있음.
@@ -45,38 +44,39 @@ def generate_co3d_json_file(root_path):
 
 
 def camera_position_scaling(seq_c2ws):
-    seq_c2ws = torch.stack(seq_c2ws)
+    seq_c2ws = np.stack(seq_c2ws, axis=0)
     seq_translations = seq_c2ws[:, :3, 3]
 
     # 모든 카메라들의 center를 계산
-    camera_center = seq_translations.mean(dim=0)
+    camera_center = seq_translations.mean(axis=0)
     # 모든 카메라의 x, y, z에 대해 center로부터 가장 멀리 떨어진 값을 찾음 --> 바운딩 박스의 반지름
-    offset = seq_translations.sub(camera_center).abs().max() + 0.05
+    # offset = seq_translations.subtract(camera_center).abs().max() + 0.05
+    offset = np.max(np.abs(np.subtract(seq_translations, camera_center))) + 0.05
 
     # 바운딩 박스의 중심을 (0, 0, 0)으로 옮겨오고
     seq_c2ws[:, :3, 3] -= camera_center
     # offset으로 나누어 -1 ~ 1 범위로 normalize
     seq_c2ws[:, :3, 3] /= offset
 
-    return list(seq_c2ws.unbind(dim=0))
+    return list(seq_c2ws)       # unbind
 
 
 def get_c2w_intrinsic(img_size, viewpoint):
-    rotation = torch.tensor(viewpoint['R'])
-    translation =  torch.tensor(viewpoint['T'])
+    rotation = np.array(viewpoint['R'], dtype=np.float32)
+    translation =  np.array(viewpoint['T'], dtype=np.float32)
     
-    extrinsic = torch.eye(4)
+    extrinsic = np.eye(4)
     extrinsic[:3, :3] = rotation
     extrinsic[:3, 3] = translation
     # extrinsic[1:3, :] *= -1.
     w2c = extrinsic
-    c2w = torch.inverse(w2c)
+    c2w = np.linalg.inv(w2c)
     
-    focal_length =  torch.tensor(viewpoint["focal_length"])
-    principal_point =  torch.tensor(viewpoint["principal_point"])
+    focal_length =  np.array(viewpoint["focal_length"], dtype=np.float32)
+    principal_point =  np.array(viewpoint["principal_point"], dtype=np.float32)
 
     # principal point and focal length in pixels
-    half_image_size_wh_orig = torch.tensor([x/2 for x in img_size])
+    half_image_size_wh_orig = np.array([x/2 for x in img_size], dtype=np.float32)
     principal_point_px = -1.0 * (principal_point - 1.0) * half_image_size_wh_orig
     focal_length_px = focal_length * half_image_size_wh_orig
     # if self.box_crop:
@@ -87,8 +87,8 @@ def get_c2w_intrinsic(img_size, viewpoint):
     # principal_point = 1 - principal_point_px * scale / half_image_size_wh_output
     # focal_length = focal_length_px * scale / half_image_size_wh_output
 
-    intrinsic = torch.eye(4)
-    intrinsic[0][2], intrinsic[1][2] = principal_point_px
+    intrinsic = np.eye(4)
+    intrinsic[1][2], intrinsic[0][2] = principal_point_px   # H, W 순서
     intrinsic[0][0], intrinsic[1][1] = focal_length_px
 
     return c2w, intrinsic
@@ -147,6 +147,44 @@ def read_category_data(category_path, normalization=True):
         category_intrinsic_mats.extend(seq_intrinsic_mats)
 
     return category_imgs, category_masks, category_c2w_mats, category_intrinsic_mats
+
+
+# inplane rotation = roll 회전 = 이미지 그대로를 왼쪽, 오른쪽으로 회전
+def rectify_inplane_rotation(src_pose, tar_pose, src_img, th=40):
+    # relative = w2c(tgt) * c2w(src) 
+    # P_src > P_tgt ---> 그래서 src와 tgt 사이의 상대적 변환이라고 말하는 듯
+    relative = np.linalg.inv(tar_pose).dot(src_pose)
+    relative_rot = relative[:3, :3]
+    r = R.from_matrix(relative_rot)
+
+    # 두 카메라 사이의 euler angle 측정
+    # euler = r.as_euler('zxy', degrees=True)
+    # euler_z = euler[0]
+    euler = r.as_euler('xyz', degrees=True)
+    euler_z = euler[2]
+
+    # euler_z 값이 임계치를 넘으면 해당 소스뷰를 리턴
+    if np.abs(euler_z) < th:
+        return src_pose, src_img
+
+    # euler_z 값이 임계치를 넘지 못하면 -euler_z만큼 소스뷰를 더 회전시킨다.
+    R_rectify = R.from_euler('z', -euler_z, degrees=True).as_matrix()
+    src_R_rectified = src_pose[:3, :3].dot(R_rectify)
+    
+    # 조정한 소스뷰의 포즈
+    out_pose = np.eye(4)
+    out_pose[:3, :3] = src_R_rectified
+    out_pose[:3, 3:4] = src_pose[:3, 3:4]
+    
+    # 소스 이미지를 -euler_z만큼 회전
+    h, w = src_img.shape[:2]
+    center = ((w - 1.) / 2., (h - 1.) / 2.)
+    M = cv2.getRotationMatrix2D(center, -euler_z, 1)
+    src_img = np.clip((255*src_img).astype(np.uint8), a_max=255, a_min=0)
+    rotated = cv2.warpAffine(src_img, M, (w, h), borderValue=(255, 255, 255), flags=cv2.INTER_LANCZOS4)
+    rotated = rotated.astype(np.float32) / 255.
+    
+    return out_pose, rotated
 
 
 # Roation matrix 사이의 angular distance를 측정
@@ -216,26 +254,3 @@ def get_nearest_src(tgt_pose, src_poses, num_select, tgt_id=-1, angular_dist_met
     selected_ids = sorted_ids[:num_select]
 
     return selected_ids
-
-
-def rectify_inplane_rotation(src_pose, tar_pose, src_img, th=40):
-    relative = np.linalg.inv(tar_pose).dot(src_pose)
-    relative_rot = relative[:3, :3]
-    r = R.from_matrix(relative_rot)
-    euler = r.as_euler('zxy', degrees=True)
-    euler_z = euler[0]
-    if np.abs(euler_z) < th:
-        return src_pose, src_img
-
-    R_rectify = R.from_euler('z', -euler_z, degrees=True).as_matrix()
-    src_R_rectified = src_pose[:3, :3].dot(R_rectify)
-    out_pose = np.eye(4)
-    out_pose[:3, :3] = src_R_rectified
-    out_pose[:3, 3:4] = src_pose[:3, 3:4]
-    h, w = src_img.shape[:2]
-    center = ((w - 1.) / 2., (h - 1.) / 2.)
-    M = cv2.getRotationMatrix2D(center, -euler_z, 1)
-    src_img = np.clip((255*src_img).astype(np.uint8), a_max=255, a_min=0)
-    rotated = cv2.warpAffine(src_img, M, (w, h), borderValue=(255, 255, 255), flags=cv2.INTER_LANCZOS4)
-    rotated = rotated.astype(np.float32) / 255.
-    return out_pose, rotated
