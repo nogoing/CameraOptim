@@ -5,8 +5,9 @@ import imageio
 
 
 class CO3Ddataset(Dataset):
-    def __init__(self, root_dir, mode, N_src, categories=[], **kwargs):
+    def __init__(self, root_dir, mode, N_src, categories=[], bounded_crop=False, pose_normalize=False, **kwargs):
         self.dataset_path = os.path.join(root_dir, 'CO3D/')
+        self.bounded_crop = bounded_crop
 
         if mode == 'validation':
             mode = 'val'
@@ -33,7 +34,7 @@ class CO3Ddataset(Dataset):
         for category in categories:
             self.category_path = os.path.join(self.dataset_path, category)     # ".../CO3D/teddybear"
 
-            cg_rgb_paths, cg_mask_paths, cg_c2ws, cg_intrinsics  = read_category_data(self.category_path)
+            cg_rgb_paths, cg_mask_paths, cg_c2ws, cg_intrinsics  = read_category_data(self.category_path, pose_normalize)
             
             if self.mode != 'train':
                 cg_rgb_paths = cg_rgb_paths[::self.testskip]
@@ -74,17 +75,27 @@ class CO3Ddataset(Dataset):
             id_render = -1
             subsample_factor = 1
 
-        rgb = imageio.imread(tgt_rgb_path).astype(np.float32) / 255.
+        rgb = imageio.imread(tgt_rgb_path).astype(np.float32).transpose(2, 0, 1) / 255.
         mask = imageio.imread(tgt_mask_path).astype(np.float32) / 255.
-        img_size = rgb.shape[:2]
+        
+        img_size = rgb.shape[-2:]
+
+        if self.bounded_crop:
+            bbox_xywh = torch.tensor(get_bbox_from_mask(mask, thr=0.4), dtype=torch.float32)
+            rgb = crop_around_box(torch.tensor(rgb, dtype=torch.float32), bbox_xywh, tgt_rgb_path)
+            mask = crop_around_box(torch.tensor(mask, dtype=torch.float32), bbox_xywh, tgt_rgb_path)
 
         # 타겟뷰의 카메라 정보를 일렬로 이어붙임. (이미지 사이즈 2 + intrinsic 16 + extrinsic 16)
         camera = np.concatenate((list(img_size), tgt_intrinsic.flatten(),
                                  tgt_pose.flatten())).astype(np.float32)
+        camera = torch.tensor(camera, dtype=torch.float32)
 
         tgt_camera_center = tgt_pose[:3, 3]
-        near_depth = np.max(0, np.linalg.norm(tgt_camera_center) - 8)
-        far_depth = np.linalg.norm(tgt_camera_center) + 8
+        tgt_camera_norm = np.linalg.norm(tgt_camera_center) - 8.
+
+        near_depth = 0.0 if tgt_camera_norm < 0 else tgt_camera_norm
+        far_depth = np.linalg.norm(tgt_camera_center) + 8.
+
         depth_range = torch.tensor([near_depth, far_depth])
 
         # 시퀀스 내의 모든 카메라에서 타겟뷰와 가장 가까운 N_src개의 소스뷰를 고른다.
@@ -107,44 +118,33 @@ class CO3Ddataset(Dataset):
         src_cameras = []
         for id in nearest_src_ids:
             src_rgb_path = os.path.join(self.dataset_path, seq_rgb_paths[id])
-            src_rgb = imageio.imread(src_rgb_path).astype(np.float32) / 255.
+            src_rgb = imageio.imread(src_rgb_path).astype(np.float32).transpose(2, 0, 1) / 255.
 
             src_mask_path = os.path.join(self.dataset_path, seq_mask_paths[id])
             src_mask = imageio.imread(src_mask_path).astype(np.float32) / 255.
-            
+
             src_pose = seq_c2ws[id]
             src_intrinsic = seq_intrinsics[id]
 
-            img_size = src_rgb.shape[:2]
+            img_size = src_rgb.shape[-2:]
+
+            if self.bounded_crop:
+                bbox_xywh = torch.tensor(get_bbox_from_mask(src_mask, thr=0.4), dtype=torch.float32)
+                src_rgb = crop_around_box(torch.tensor(src_rgb, dtype=torch.float32), bbox_xywh, src_rgb_path)
+                src_mask = crop_around_box(torch.tensor(src_mask, dtype=torch.float32), bbox_xywh, src_mask_path)
 
             src_rgb_paths.append(seq_rgb_paths[id])
-            src_rgbs.append(torch.tensor(src_rgb, dtype=torch.float32))
-            src_masks.append(torch.tensor(src_mask, dtype=torch.float32))
+            src_rgbs.append(src_rgb)
+            src_masks.append(src_mask)
             
             # 소스뷰의 카메라 정보를 일렬로 이어붙임. (이미지 사이즈 2 + intrinsic 16 + extrinsic 16)
             src_camera = np.concatenate((list(img_size), src_intrinsic.flatten(),
                                               src_pose.flatten())).astype(np.float32)
             src_cameras.append(torch.tensor(src_camera, dtype=torch.float32))
 
-        # src_rgbs = np.stack(src_rgbs, axis=0)
-        # src_masks = np.stack(src_masks, axis=0)
-        # src_cameras = np.stack(src_cameras, axis=0)
-
-        # return {'rgb': torch.tensor(rgb[..., :3], dtype=torch.float32),
-        #         'mask': torch.tensor(mask, dtype=torch.float32),
-        #         'camera': torch.tensor(camera, dtype=torch.float32),
-        #         'rgb_path': tgt_rgb_path,
-
-        #         'src_rgbs': torch.tensor(src_rgbs[..., :3], dtype=torch.float32),
-        #         'src_masks': torch.tensor(src_masks, dtype=torch.float32),
-        #         'src_cameras': torch.tensor(src_cameras, dtype=torch.float32),
-        #         'src_rgb_paths': src_rgb_paths,
-
-        #         'depth_range': depth_range,
-        #         }
-        return {'rgb': torch.tensor(rgb[..., :3], dtype=torch.float32),
-                'mask': torch.tensor(mask, dtype=torch.float32),
-                'camera': torch.tensor(camera, dtype=torch.float32),
+        return {'rgb': rgb, 
+                'mask': mask,
+                'camera': camera,
                 'rgb_path': tgt_rgb_path,
 
                 'src_rgbs': src_rgbs,

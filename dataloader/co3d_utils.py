@@ -1,4 +1,5 @@
 import os
+import torch
 import numpy as np
 import cv2
 import json, gzip
@@ -95,7 +96,7 @@ def get_c2w_intrinsic(img_size, viewpoint):
 
 
 # 하나의 sequence (= 오브젝트 한 개) data를 읽어오는 함수
-def read_seq_data(seq_path, normalization=True):
+def read_seq_data(seq_path, normalization=False):
     frame_annotations_file = os.path.join(seq_path, "frame_annotations_file.json")
     with open(frame_annotations_file, 'r') as f:
         frames = json.load(f)
@@ -121,7 +122,7 @@ def read_seq_data(seq_path, normalization=True):
 
 
 # 하나의 category (= 해당 카테고리 내 모든 오브젝트) data를 읽어오는 함수
-def read_category_data(category_path, normalization=True):
+def read_category_data(category_path, normalization=False):
     category_imgs = []
     category_masks = []
     category_c2w_mats = []
@@ -254,3 +255,62 @@ def get_nearest_src(tgt_pose, src_poses, num_select, tgt_id=-1, angular_dist_met
     selected_ids = sorted_ids[:num_select]
 
     return selected_ids
+
+
+############# mask를 이용하여 이미지 내의 오브젝트 영역만 크롭 #############
+
+# 1d-array에서 바운딩 구간을 구함
+def get_1d_bounds(arr):
+    nz = np.flatnonzero(arr)
+    return nz[0], nz[-1]
+
+# mask로부터 오브젝트의 바운딩 박스를 계산
+# 좌-상단 (x, y) 위치와 바운딩 박스의 width, height를 리턴함
+def get_bbox_from_mask(mask, thr, decrease_quant=0.05):
+    # bbox in xywh
+    masks_for_box = np.zeros_like(mask)
+    while masks_for_box.sum() <= 1.0:
+        masks_for_box = (mask > thr).astype(np.float32)
+        thr -= decrease_quant
+
+    x0, x1 = get_1d_bounds(masks_for_box.sum(axis=-2))
+    y0, y1 = get_1d_bounds(masks_for_box.sum(axis=-1))
+
+    return x0, y0, x1 - x0, y1 - y0
+
+# 바운딩 박스의 크기를 일정 비율 늘리는 함수
+def get_clamp_bbox(bbox, box_crop_context=0.0, img_path=""):
+    # box_crop_context: rate of expansion for bbox
+    # returns possibly expanded bbox xyxy as float
+
+    # increase box size
+    if box_crop_context > 0.0:
+        c = box_crop_context
+        bbox = bbox.float()
+        bbox[0] -= bbox[2] * c / 2
+        bbox[1] -= bbox[3] * c / 2
+        bbox[2] += bbox[2] * c
+        bbox[3] += bbox[3] * c
+
+    if (bbox[2:] <= 1.0).any():
+        return None
+
+    bbox[2:] = torch.clamp(bbox[2:], 2)
+    bbox[2:] += bbox[0:2] + 1  # convert to [xmin, ymin, xmax, ymax]
+    # +1 because upper bound is not inclusive
+
+    return bbox
+
+# 입력으로 받은 이미지 텐서와 바운딩 박스 정보를 가지고 이미지 텐서를 크롭
+def crop_around_box(tensor, bbox, img_path=""):
+    # bbox is xyxy, where the upper bound is corrected with +1
+    bbox[[0, 2]] = torch.clamp(bbox[[0, 2]], 0.0, tensor.shape[-1])
+    bbox[[1, 3]] = torch.clamp(bbox[[1, 3]], 0.0, tensor.shape[-2])
+    bbox = bbox.round().long()
+    print(tensor.shape)
+    print(bbox)
+    tensor = tensor[..., bbox[1] : bbox[1]+bbox[3], bbox[0] : bbox[0]+bbox[2]]
+    print(tensor.shape)
+    assert all(c > 0 for c in tensor.shape), f"squashed image {img_path}"
+
+    return tensor
