@@ -9,26 +9,26 @@ class NerFormer(nn.Module):
 
         self.d_z = d_z  # Input feature의 차원
 
-        # input: (N_s, N_src, d_z)
+        # input: (N_rays(=Batch), N_s, N_src, d_z)
         self.linear_1 = nn.Linear(d_z, 80, bias=False)
         
-        # (N_s, N_src, 80)
+        # (N_rays, N_s, N_src, 80)
         self.TE_1 = nn.Sequential(
-            TransformerEncoder(along_dim=1, feature_dim=80, num_heads=8),          # Pooling transformer encoder
-            TransformerEncoder(along_dim=0, feature_dim=80, num_heads=8)           # Ray transformer encoder
+            TransformerEncoder(along_dim=2, feature_dim=80, num_heads=8),          # Pooling transformer encoder
+            TransformerEncoder(along_dim=1, feature_dim=80, num_heads=8)           # Ray transformer encoder
         )
         self.dim_linear_1 = nn.Linear(80, 40)
-        # (N_s, N_src, 40)
+        # (N_rays, N_s, N_src, 40)
         self.TE_2 = nn.Sequential(
-            TransformerEncoder(along_dim=1, feature_dim=40, num_heads=4),          # Pooling transformer encoder
-            TransformerEncoder(along_dim=0, feature_dim=40, num_heads=4)           # Ray transformer encoder
+            TransformerEncoder(along_dim=2, feature_dim=40, num_heads=4),          # Pooling transformer encoder
+            TransformerEncoder(along_dim=1, feature_dim=40, num_heads=4)           # Ray transformer encoder
         )
         self.dim_linear_2 = nn.Linear(80, 40)
-        # (N_s, N_src, 20)
+        # (N_rays, N_s, N_src, 20)
 
         self.weight_layer = nn.Sequential(
             nn.Linear(20, 1),
-            nn.Softmax(dim=1)
+            nn.Softmax(dim=2)
         )
 
         # color function head
@@ -47,24 +47,24 @@ class NerFormer(nn.Module):
         )
 
     def forward(self, input_tensor):
-        # input_tensor: (N_s, N_src, D_z)
+        # input_tensor: (N_rays(=Batch), N_s, N_src, D_z)
 
-        x = self.linear_1(input_tensor)     # (N_s, N_src, 80)
+        x = self.linear_1(input_tensor)     # (N_rays, N_s, N_src, 80)
 
-        x = self.TE_1(x)                    # (N_s, N_src, 80)
-        x = self.dim_linear_1(x)              # (N_s, N_src, 40)
+        x = self.TE_1(x)                    # (N_rays, N_s, N_src, 80)
+        x = self.dim_linear_1(x)              # (N_rays, N_s, N_src, 40)
 
-        x = self.TE_2(x)                    # (N_s, N_src, 40)
-        x = self.dim_linear_2(x)              # (N_s, N_src, 20)
+        x = self.TE_2(x)                    # (N_rays, N_s, N_src, 40)
+        x = self.dim_linear_2(x)              # (N_rays, N_s, N_src, 20)
         
         # weighted sum along dim 1
-        weight = self.weight_layer(x)       # (N_s, N_src, 1)
-        per_point_features = torch.sum(weight*x, dim=1)      # (N_s, 20)
+        weight = self.weight_layer(x)       # (N_rays, N_s, N_src, 1)
+        per_point_features = torch.sum(weight*x, dim=2)      # (N_rays, N_s, 20)
 
         # Color function
-        ray_colors = self.c_head(per_point_features) # (N_s, 3)
+        ray_colors = self.c_head(per_point_features) # (N_rays, N_s, 3)
         # Opacity function
-        ray_densities = self.f_head(per_point_features) # (N_s, 1)
+        ray_densities = self.f_head(per_point_features) # (N_rays, N_s, 1)
 
         return ray_densities, ray_colors
 

@@ -1,65 +1,69 @@
 import torch
 import numpy as np
-
+import pytorch3d
 
 ##########################################################################################
 # 타겟 이미지에서 랜덤으로 ray를 샘플링해주는 객체
 # Training 또는 Test 코드 레벨에서 생성된다.
+
+# return
+# 타겟 카메라에서 샘플링 된 픽셀로 향하는 ray의 direction, origin과 해당 픽셀의 rgb값
 ##########################################################################################
 
 
 class RaySampler(object):
-    def __init__(self, data, device, H, W, intrinsics, c2w, resize_factor=1, render_stride=1):
+    def __init__(self, data, target_cam_idx, device, resize_factor=1, render_stride=1):
         super().__init__()
 
         self.render_stride = render_stride
         self.device = device
 
         self.rgb = data['rgb'] if 'rgb' in data.keys() else None
+        self.rgb_path = data['rgb_path'] if 'rgb_path' in data.keys() else None
+
         self.camera = data['camera']
-        self.rgb_path = data['rgb_path']
-        self.depth_range = data['depth_range']
+        self.target_cam_idx = target_cam_idx
 
-        self.H = int(H)
-        self.W = int(W)
-        self.intrinsics = intrinsics
-        self.c2w_mat = c2w
+        self.depth_range = data['depth_range'] if 'depth_range' in data.keys() else None
 
-        self.batch_size = len(self.camera)
+        self.H, self.W = self.rgb.shape[-2:]
+
+        self.ndc_transform = pytorch3d.renderer.cameras.get_screen_to_ndc_transform(self.camera, image_size=(self.H, self.W), with_xyflip=True)[target_cam_idx]
+        self.K_transform = self.camera.get_projection_transform()[target_cam_idx]
+        self.c2w_transform = self.camera.get_world_to_view_transform()[target_cam_idx].inverse()
 
         # 배치 내의 모든 이미지에 대해 전체 픽셀로 향하는 각 ray들을 정의
-        self.rays_o, self.rays_d = self.get_rays(self.H, self.W, self.intrinsics, self.c2w_mat, render_stride)
+        self.rays_o, self.rays_d = self.get_rays(render_stride)
 
     
     # 타겟 이미지의 각 픽셀마다 rays_o, rays_d를 구하는 함수.
     # __init__() 단계에서 실행됨.
-    def get_rays(self, H, W, intrinsics, c2w, render_stride):
-        '''
-        param H: image height
-        param W: image width
-        param intrinsics: 4 by 4 intrinsic matrix
-        param c2w: 4 by 4 camera to world extrinsic matrix
-        
-        return: rays_o, rays_d
-        '''
+    def get_rays(self, render_stride):
         # u --> x 인덱싱
         # v --> y 인덱싱
-        u, v = np.meshgrid(np.arange(W)[::render_stride], np.arange(H)[::render_stride])
+        u, v = np.meshgrid(np.arange(self.W)[::render_stride], np.arange(self.H)[::render_stride])
 
         # 이미지의 각 row들이 한 줄로 이어붙은 형태로 변환
         # (H, W) --> (H*W)
         u = u.reshape(-1).astype(dtype=np.float32)  # + 0.5    # add half pixel
         v = v.reshape(-1).astype(dtype=np.float32)  # + 0.5
 
-        pixels = np.stack((u, v, np.ones_like(u)), axis=0)  # [3(x+y+z), H*W]? 아니면 homogeneous coordinate라 1을 추가한 건지?
-        pixels = torch.from_numpy(pixels)
-        batched_pixels = pixels.unsqueeze(0).repeat(self.batch_size, 1, 1)
+        pixels = np.stack((u, v, np.ones_like(u)), axis=1)  # [3(x+y+z), H*W]
+        pixels = torch.from_numpy(pixels)       # pixels --> Screen coord
 
-        # bmm : batch matrix-matrix product 
-        # [B, N, M] tensor * [B, M, P] tensor >>> [B, N, P]
-        rays_d = (c2w[:, :3, :3].bmm(torch.inverse(intrinsics[:, :3, :3])).bmm(batched_pixels)).transpose(1, 2)
-        rays_d = rays_d.reshape(-1, 3)
-        rays_o = c2w[:, :3, 3].unsqueeze(1).repeat(1, rays_d.shape[0], 1).reshape(-1, 3)  # B x HW x 3
+        # Screen >>> NDC
+        ndc_pixels = self.ndc_transform.transform_points(pixels)
+        # NDC >>> Camera
+        cam_rays = self.K_transform.inverse().transform_points(ndc_pixels)
+        # Camera >>> World
+        rays_d = self.c2w_transform.transform_points(cam_rays)
+        rays_o = self.camera.get_camera_center()[self.target_cam_idx].unsqueeze(0).repeat(rays_d.shape[0], 1)
+
+        # 위의 rays_d는 rotation + tanslation까지 모두 변환된 것이기 때문에 
+        # 해당 이미지 픽셀로 향하는 ray의 `방향`이 아니라
+        # 해당 이미지 픽셀의 `위치`가 된다. 즉 3차원 point 좌표값이라는 것임.
+        # 그래서 translation 값에 해당하는 rays_o를 한 번 빼서 `방향값`으로 만들어준다.
+        rays_d -= rays_o
         
         return rays_o, rays_d
 
@@ -105,14 +109,15 @@ class RaySampler(object):
         rays_d = self.rays_d[select_inds]
 
         if self.rgb is not None:
-            rgb = self.rgb[select_inds]
+            rgb = self.rgb.permute(1, 2, 0).reshape(-1, 3).unsqueeze(0)
+            rgb = rgb[:, select_inds]
         else:
             rgb = None
 
         ret = {'ray_o': rays_o.cuda(),
                 'ray_d': rays_d.cuda(),
                 'camera': self.camera.cuda(),
-                'depth_range': self.depth_range.cuda(),
+                'depth_range': self.depth_range.cuda() if self.depth_range is not None else None,
                 'rgb': rgb.cuda() if rgb is not None else None,
                 # 'src_rgbs': self.src_rgbs.cuda() if self.src_rgbs is not None else None,
                 # 'src_cameras': self.src_cameras.cuda() if self.src_cameras is not None else None,
@@ -120,36 +125,3 @@ class RaySampler(object):
         }
         
         return ret
-
-
-# def get_rays_np(H, W, K, c2w):
-#     i, j = np.meshgrid(np.arange(W, dtype=np.float32), np.arange(H, dtype=np.float32), indexing='xy')
-#     dirs = np.stack([(i-K[0][2])/K[0][0], -(j-K[1][2])/K[1][1], -np.ones_like(i)], -1)
-#     # Rotate ray directions from camera frame to the world frame
-#     rays_d = np.sum(dirs[..., np.newaxis, :] * c2w[:3,:3], -1)  # dot product, equals to: [c2w.dot(dir) for dir in dirs]
-#     # Translate camera frame's origin to the world frame. It is the origin of all rays.
-#     rays_o = np.broadcast_to(c2w[:3,-1], np.shape(rays_d))
-
-#     return rays_o, rays_d
-
-
-
-
-# def ndc_rays(H, W, focal, near, rays_o, rays_d):
-#     # Shift ray origins to near plane
-#     t = -(near + rays_o[...,2]) / rays_d[...,2]
-#     rays_o = rays_o + t[...,None] * rays_d
-    
-#     # Projection
-#     o0 = -1./(W/(2.*focal)) * rays_o[...,0] / rays_o[...,2]
-#     o1 = -1./(H/(2.*focal)) * rays_o[...,1] / rays_o[...,2]
-#     o2 = 1. + 2. * near / rays_o[...,2]
-
-#     d0 = -1./(W/(2.*focal)) * (rays_d[...,0]/rays_d[...,2] - rays_o[...,0]/rays_o[...,2])
-#     d1 = -1./(H/(2.*focal)) * (rays_d[...,1]/rays_d[...,2] - rays_o[...,1]/rays_o[...,2])
-#     d2 = -2. * near / rays_o[...,2]
-    
-#     rays_o = torch.stack([o0,o1,o2], -1)
-#     rays_d = torch.stack([d0,d1,d2], -1)
-    
-#     return rays_o, rays_d

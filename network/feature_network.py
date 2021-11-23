@@ -35,19 +35,19 @@ class FeatureNet(nn.Module):
             # Upsampling > 1x1 Conv2D (32ch) > l2 normaliation of the feature column
             # after layer 1
             if i == 4:
-                feature_map = nn.Upsample((h, w), mode='bilinear')(img)
+                feature_map = nn.Upsample((h, w), mode='bilinear', align_corners=False)(img)
                 feature_map = self.conv1x1_1(feature_map)
                 feature_map = F.normalize(feature_map, p=2, dim=1)
                 feature_maps.append(feature_map)
             # after layer 2
             elif i == 5:
-                feature_map = nn.Upsample((h, w), mode='bilinear')(img)
+                feature_map = nn.Upsample((h, w), mode='bilinear', align_corners=False)(img)
                 feature_map = self.conv1x1_2(feature_map)
                 feature_map = F.normalize(feature_map, p=2, dim=1)
                 feature_maps.append(feature_map)
             # after layer 3
             elif i == 6:
-                feature_map = nn.Upsample((h, w), mode='bilinear')(img)
+                feature_map = nn.Upsample((h, w), mode='bilinear', align_corners=False)(img)
                 feature_map = self.conv1x1_3(feature_map)
                 feature_map = F.normalize(feature_map, p=2, dim=1)
                 feature_maps.append(feature_map)

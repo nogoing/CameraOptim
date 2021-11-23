@@ -16,8 +16,8 @@ def sample_along_camera_ray(ray_o, ray_d, depth_range,
     '''
     # 샘플들은 [near_depth, far_depth] 범위 안에 있어야 함.
     # assume the nearest possible depth is at least (min_ratio * depth)
-    near_depth_value = depth_range[0, 0]
-    far_depth_value = depth_range[0, 1]
+    near_depth_value = depth_range[0]
+    far_depth_value = depth_range[1]
     assert near_depth_value > 0 and far_depth_value > 0 and far_depth_value > near_depth_value
 
     near_depth = near_depth_value * torch.ones_like(ray_d[..., 0])
@@ -40,10 +40,10 @@ def sample_along_camera_ray(ray_o, ray_d, depth_range,
         lower = torch.cat([z_vals[:, 0:1], mids], dim=-1)
         # uniform samples in those intervals
         t_rand = torch.rand_like(z_vals)
-        z_vals = lower + (upper - lower) * t_rand   # [N_rays, N_samples]
+        z_vals = lower + (upper - lower) * t_rand
 
     ray_d = ray_d.unsqueeze(1).repeat(1, N_samples, 1)  # [N_rays, N_samples, 3]
-    ray_o = ray_o.unsqueeze(1).repeat(1, N_samples, 1)
+    ray_o = ray_o.unsqueeze(1).repeat(1, N_samples, 1)  # [N_rays, N_samples]
 
     # 샘플 포인트 위치를 계산.
     # ray의 원점으로부터 ray의 방향으로 z_val만큼 전진한 것.
