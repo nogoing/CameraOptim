@@ -12,21 +12,25 @@ import pytorch3d
 
 
 class RaySampler(object):
-    def __init__(self, data, target_cam_idx, device, resize_factor=1, render_stride=1):
+    def __init__(self, data, target_cam_idx, device, render_stride=1):
         super().__init__()
 
         self.render_stride = render_stride
         self.device = device
 
-        self.rgb = data['rgb'] if 'rgb' in data.keys() else None
-        self.rgb_path = data['rgb_path'] if 'rgb_path' in data.keys() else None
+        # rays_o, rays_d shape과 동일하게 일렬로 펴서 저장
+        self.rgb = data["rgb"].permute(1, 2, 0).view(-1, 3)     # (H*W, 3)
+        self.rgb_path = data["rgb_path"] if "rgb_path" in data.keys() else None
 
-        self.camera = data['camera']
+        # rays_o, rays_d shape과 동일하게 일렬로 펴서 저장
+        self.mask = data["mask"].view(-1)       # (H*W, 3)
+        
+        self.camera = data["camera"]
         self.target_cam_idx = target_cam_idx
 
-        self.depth_range = data['depth_range'] if 'depth_range' in data.keys() else None
+        self.depth_range = data["depth_range"]
 
-        self.H, self.W = self.rgb.shape[-2:]
+        self.H, self.W = data["rgb"].shape[-2:]
 
         self.ndc_transform = pytorch3d.renderer.cameras.get_screen_to_ndc_transform(self.camera, image_size=(self.H, self.W), with_xyflip=True)[target_cam_idx]
         self.K_transform = self.camera.get_projection_transform()[target_cam_idx]
@@ -48,8 +52,8 @@ class RaySampler(object):
         u = u.reshape(-1).astype(dtype=np.float32)  # + 0.5    # add half pixel
         v = v.reshape(-1).astype(dtype=np.float32)  # + 0.5
 
-        pixels = np.stack((u, v, np.ones_like(u)), axis=1)  # [3(x+y+z), H*W]
-        pixels = torch.from_numpy(pixels)       # pixels --> Screen coord
+        pixels = np.stack((u, v, np.ones_like(u)), axis=1)  # (3, H*W)
+        pixels = torch.from_numpy(pixels).to(self.device)       # pixels --> Screen coord
 
         # Screen >>> NDC
         ndc_pixels = self.ndc_transform.transform_points(pixels)
@@ -108,20 +112,31 @@ class RaySampler(object):
         rays_o = self.rays_o[select_inds]
         rays_d = self.rays_d[select_inds]
 
-        if self.rgb is not None:
-            rgb = self.rgb.permute(1, 2, 0).reshape(-1, 3).unsqueeze(0)
-            rgb = rgb[:, select_inds]
-        else:
-            rgb = None
+        # 샘플링 된 픽셀의 target RGB 값
+        rgb = self.rgb[select_inds]
+        # 샘플링 된 픽셀의 target Mask 값
+        mask = self.mask[select_inds]
 
-        ret = {'ray_o': rays_o.cuda(),
-                'ray_d': rays_d.cuda(),
-                'camera': self.camera.cuda(),
-                'depth_range': self.depth_range.cuda() if self.depth_range is not None else None,
-                'rgb': rgb.cuda() if rgb is not None else None,
-                # 'src_rgbs': self.src_rgbs.cuda() if self.src_rgbs is not None else None,
-                # 'src_cameras': self.src_cameras.cuda() if self.src_cameras is not None else None,
-                # 'selected_inds': select_inds
-        }
+        ret = {
+                "ray_o": rays_o.to(self.device),
+                "ray_d": rays_d.to(self.device),
+                "depth_range": self.depth_range.to(self.device),
+                "camera": self.camera.to(self.device),
+                "rgb": rgb.to(self.device),
+                "mask": mask.to(self.device),
+                }
         
+        return ret
+
+    
+    def get_all(self):
+        ret = {
+                "ray_o": self.rays_o.to(self.device),
+                "ray_d": self.rays_d.to(self.device),
+                "depth_range": self.depth_range.to(self.device),
+                "camera": self.camera.to(self.device),
+                "rgb": self.rgb.to(self.device),
+                "mask": self.mask.to(self.device),
+                }
+
         return ret

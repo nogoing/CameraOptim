@@ -24,7 +24,7 @@ class FeatureNet(nn.Module):
         self.conv1x1_2 = nn.Conv2d(128, 32, (1, 1))
         self.conv1x1_3 = nn.Conv2d(256, 32, (1, 1))
 
-    def forward(self, img):
+    def forward(self, img, mask):
         feature_maps = []
         orig_img = img
         h, w = img.shape[-2:]
@@ -53,7 +53,7 @@ class FeatureNet(nn.Module):
                 feature_maps.append(feature_map)
 
         feature_maps.append(orig_img)
-        # feature_maps.append(mask)
+        feature_maps.append(mask)
         
         # feature_maps = [ResNet Features, RGB Image, Segmentation Mask]
         # 각 feature의 shape은 (1, C, H, W) ?
