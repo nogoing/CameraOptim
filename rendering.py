@@ -25,7 +25,10 @@ def feature_sampling(feature_maps, camera, pts, pe, img_size, src_idxs, padding_
     screen_to_ndc_transforms = pytorch3d.renderer.cameras.get_screen_to_ndc_transform(camera, image_size=img_size, with_xyflip=True)[src_idxs]
     src_proj_points_ndc = screen_to_ndc_transforms.transform_points(src_proj_points)
     
-    src_grid = src_proj_points_ndc.reshape(-1, N_rays, N_samples, 3)[..., :2]   # (N_src, N_rays, N_samples, 2)
+    # grid 좌표축 방향은 ndc 좌표축과 반대라서 -1을 곱한다.
+    # ndc --> left-top: (1, 1)    /   right_bottom: (-1, -1)
+    # grid_sampling --> left-top: (-1, -1)    /   right_bottom: (1, 1)
+    src_grid = -src_proj_points_ndc.reshape(-1, N_rays, N_samples, 3)[..., :2]   # (N_src, N_rays, N_samples, 2)
     
     # (N_src, feature_dim, N_rays, N_samples)
     sampling_features = F.grid_sample(feature_maps, src_grid, align_corners=False, 
@@ -46,55 +49,6 @@ def feature_sampling(feature_maps, camera, pts, pe, img_size, src_idxs, padding_
 ##########################################################################################
 
 
-# # coarse 단계에서 아웃풋으로 나온 depth 값을 weight로 변환
-# def raw2outputs(raw, z_vals, mask, white_bkgd=False):
-#     '''
-#     param raw: raw network의 아웃풋 --> [N_rays, N_samples, 4(RGB + density)]
-#     param z_vals: rays 상에 놓인 각 samples에서의 depth --> [N_rays, N_samples]
-#     param ray_d: rays의 디렉션 벡터 --> [N_rays, 3]
-    
-#     return: {'rgb': [N_rays, 3], 'depth': [N_rays,], 'weights': [N_rays,], 'depth_std': [N_rays,]}
-#     '''
-#     rgb = raw[:, :, :3]     # color 값 : [N_rays, N_samples, 3]
-#     sigma = raw[:, :, 3]    # density 값 : [N_rays, N_samples]
-
-#     # note: we did not use the intervals here, because in practice different scenes from COLMAP can have
-#     # very different scales, and using interval can affect the model's generalization ability.
-#     # Therefore we don't use the intervals for both training and evaluation.
-#     sigma2alpha = lambda sigma, dists: 1. - torch.exp(-sigma)
-
-#     # point samples are ordered with increasing depth
-#     # interval between samples
-#     dists = z_vals[:, 1:] - z_vals[:, :-1]
-#     dists = torch.cat((dists, dists[:, -1:]), dim=-1)  # [N_rays, N_samples]
-
-#     alpha = sigma2alpha(sigma, dists)  # [N_rays, N_samples]
-
-#     # Eq. (3): T
-#     T = torch.cumprod(1. - alpha + 1e-10, dim=-1)[:, :-1]   # [N_rays, N_samples-1]
-#     T = torch.cat((torch.ones_like(T[:, 0:1]), T), dim=-1)  # [N_rays, N_samples]
-
-#     # maths show weights, and summation of weights along a ray, are always inside [0, 1]
-#     weights = alpha * T     # [N_rays, N_samples]
-#     rgb_map = torch.sum(weights.unsqueeze(2) * rgb, dim=1)  # [N_rays, 3]
-
-#     if white_bkgd:
-#         rgb_map = rgb_map + (1. - torch.sum(weights, dim=-1, keepdim=True))
-
-#     mask = mask.float().sum(dim=1) > 8  # should at least have 8 valid observation on the ray, otherwise don't consider its loss
-#     depth_map = torch.sum(weights * z_vals, dim=-1)     # [N_rays,]
-
-#     ret = OrderedDict([('rgb', rgb_map),
-#                        ('depth', depth_map),
-#                        ('weights', weights),                # used for importance sampling of fine samples
-#                        ('mask', mask),
-#                        ('alpha', alpha),
-#                        ('z_vals', z_vals)
-#                        ])
-
-#     return ret
-
-
 def EARayMarching(ray_densities, ray_colors, z_vals):
     # z_vals: (N_rays, N_samples)
     # ray_densities: (N_rays, N_samples, 1)
@@ -109,7 +63,11 @@ def EARayMarching(ray_densities, ray_colors, z_vals):
     alphas = 1 - T + 1e-10          # (N_rays, N_samples)
 
     # absorption 계산
-    absorption = torch.cumprod(T, dim=1)        # (N_rays, N_samples)
+    # absorption = torch.cumprod(T, dim=1)        # (N_rays, N_samples)
+    # 첫 번째 항으로 1을 넣은 뒤, 마지막 항을 제외하고 누적곱
+    ones = torch.ones(T.shape[0], 1).to(T.device)
+    T_ = torch.cat((ones, T[..., :-1]), dim=1)    
+    absorption = torch.cumprod(T_, dim=1)  # (N_rays, N_samples)
 
     # weights 계산
     # importance sample을 추출하는 fine 단계에서 사용한다.
@@ -117,6 +75,8 @@ def EARayMarching(ray_densities, ray_colors, z_vals):
 
     # color 계산
     colors = torch.sum(weights.unsqueeze(2) * ray_colors, dim=-2)    # (N_rays, 3)
+    # 0. ~ 1. 사이로 clamping
+    colors = torch.clamp(colors, min=0., max=1.)
     
     # mask 계산
     masks = 1 - torch.prod((1 - T), dim=1, keepdim=True)  # (N_rays, 1)
@@ -190,11 +150,7 @@ def render_rays(ray_batch,
                 fine_model,
                 feature_maps,
                 src_idxs,
-                N_samples,
-                PE,
-                inv_uniform=False,
-                N_importance=0,
-                det=False,
+                args,
                 # white_bkgd=False
                 ):
     '''
@@ -213,19 +169,20 @@ def render_rays(ray_batch,
     #################################################################################
     ################################## Coarse step ##################################
     #################################################################################
+    N_samples = args.N_samples
 
     # pts: (N_rays, N_samples, 3)
     # z_vals: (N_rays, N_samples)
     pts, z_vals = sample_along_camera_ray(ray_batch["ray_o"], ray_batch["ray_d"], ray_batch["depth_range"],
                                             N_samples,
-                                            inv_uniform=inv_uniform,
-                                            det=det)
+                                            inv_uniform=args.inv_uniform,
+                                            det=args.det)
 
     N_rays, N_samples = pts.shape[:2]
     H, W = feature_maps.shape[-2:]
 
     # Positional Embedding
-    positional_embedding = PE(pts)
+    positional_embedding = args.PE(pts)
 
     # Input tensor 구성
     input_tensor = feature_sampling(feature_maps, ray_batch["camera"], pts, positional_embedding, (H, W), src_idxs)
@@ -233,30 +190,32 @@ def render_rays(ray_batch,
     coarse_densities, coarse_colors = coarse_model(input_tensor)
     outputs_coarse = EARayMarching(coarse_densities, coarse_colors, z_vals)
     ret["outputs_coarse"] = outputs_coarse
-
+    
     #################################################################################
     ################################### Fine step ###################################
     #################################################################################
+    N_importance = args.N_importance
+
     if N_importance > 0:
         assert fine_model is not None
 
         # detach since we would like to decouple the coarse and fine networks
         weights = outputs_coarse['weights'].clone().detach()            # [N_rays, N_samples]
         
-        if inv_uniform:
+        if args.inv_uniform:
             inv_z_vals = 1. / z_vals
             inv_z_vals_mid = .5 * (inv_z_vals[:, 1:] + inv_z_vals[:, :-1])   # [N_rays, N_samples-1]
             weights = weights[:, 1:-1]      # [N_rays, N_samples-2]
             inv_z_vals = sample_pdf(bins=torch.flip(inv_z_vals_mid, dims=[1]),
                                     weights=torch.flip(weights, dims=[1]),
-                                    N_samples=N_importance, det=det)  # [N_rays, N_importance]
+                                    N_samples=N_importance, det=args.det)  # [N_rays, N_importance]
             z_samples = 1. / inv_z_vals
         else:
             # take mid-points of depth samples
             z_vals_mid = .5 * (z_vals[:, 1:] + z_vals[:, :-1])   # [N_rays, N_samples-1]
             weights = weights[:, 1:-1]      # [N_rays, N_samples-2]
             z_samples = sample_pdf(bins=z_vals_mid, weights=weights,
-                                   N_samples=N_importance, det=det)  # [N_rays, N_importance]
+                                   N_samples=N_importance, det=args.det)  # [N_rays, N_importance]
 
         z_vals = torch.cat((z_vals, z_samples), dim=-1)  # [N_rays, N_samples + N_importance]
 
@@ -269,7 +228,7 @@ def render_rays(ray_batch,
         pts = z_vals.unsqueeze(2) * viewdirs + ray_o  # [N_rays, N_samples + N_importance, 3]
 
         # Positional Embedding
-        positional_embedding = PE(pts)
+        positional_embedding = args.PE(pts)
 
         # Input tensor 구성
         input_tensor = feature_sampling(feature_maps, ray_batch["camera"], pts, positional_embedding, (H, W), src_idxs)
@@ -287,28 +246,15 @@ def render_image(ray_sampler,
                  src_idxs,
                  model,
                  feature_maps,
-                 chunk_size,
-                 N_samples,
-                 PE,
-                 inv_uniform=False,
-                 N_importance=0,
-                 det=False,
-                 render_stride=1,
+                 args,
                  ):
-    '''
-    :param ray_sampler: RaySamplingSingleImage for this view
-    :param model:  {'net_coarse': , 'net_fine': , ...}
-    :param chunk_size: number of rays in a chunk
-    :param N_samples: samples along each ray (for both coarse and fine model)
-    :param inv_uniform: if True, uniformly sample inverse depth for coarse model
-    :param N_importance: additional samples along each ray produced by importance sampling (for fine model)
-    :return: {'outputs_coarse': {'rgb': numpy, 'depth': numpy, ...}, 'outputs_fine': {}}
-    '''
+
 
     all_ret = OrderedDict([('outputs_coarse', OrderedDict()),
                            ('outputs_fine', OrderedDict())])
 
     N_rays = ray_batch['ray_o'].shape[0]
+    chunk_size = args.chunk_size
 
     for i in range(0, N_rays, chunk_size):
         ray_chunk = OrderedDict()
@@ -321,7 +267,7 @@ def render_image(ray_sampler,
             else:
                 ray_chunk[k] = None
 
-        output = render_rays(ray_chunk, model, model, feature_maps, src_idxs, N_samples, PE, N_importance=N_importance)
+        output = render_rays(ray_chunk, model, model, feature_maps, src_idxs, args)
 
         # handle both coarse and fine outputs
         # cache chunk results on cpu
@@ -342,13 +288,14 @@ def render_image(ray_sampler,
             for k in output['outputs_fine']:
                 all_ret['outputs_fine'][k].append(output['outputs_fine'][k].cpu())
     
-    rgb_strided = torch.ones(ray_sampler.H, ray_sampler.W, 3)[::render_stride, ::render_stride, :]
+    rgb_strided = torch.ones(ray_sampler.H, ray_sampler.W, 3)[::args.render_stride, ::args.render_stride, :]
     # chunk별로 나누어진 결과를 병합
     for k in all_ret['outputs_coarse']:
         tmp = torch.cat(all_ret['outputs_coarse'][k], dim=0).reshape((rgb_strided.shape[0],
                                                                         rgb_strided.shape[1], -1))
         all_ret['outputs_coarse'][k] = tmp.squeeze()
 
+    # mask 값이 0으로 나온 곳은 배경이므로 하얀색으로 메움.
     all_ret['outputs_coarse']["rgb"][all_ret['outputs_coarse']["mask"] == 0] = 1.
 
     if all_ret['outputs_fine'] is not None:

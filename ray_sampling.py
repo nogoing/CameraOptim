@@ -12,10 +12,10 @@ import pytorch3d
 
 
 class RaySampler(object):
-    def __init__(self, data, target_cam_idx, device, render_stride=1):
+    def __init__(self, data, target_cam_idx, device, args):
         super().__init__()
 
-        self.render_stride = render_stride
+        self.render_stride = 1
         self.device = device
 
         # rays_o, rays_d shape과 동일하게 일렬로 펴서 저장
@@ -37,7 +37,7 @@ class RaySampler(object):
         self.c2w_transform = self.camera.get_world_to_view_transform()[target_cam_idx].inverse()
 
         # 배치 내의 모든 이미지에 대해 전체 픽셀로 향하는 각 ray들을 정의
-        self.rays_o, self.rays_d = self.get_rays(render_stride)
+        self.rays_o, self.rays_d = self.get_rays(self.render_stride)
 
     
     # 타겟 이미지의 각 픽셀마다 rays_o, rays_d를 구하는 함수.
