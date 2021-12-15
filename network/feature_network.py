@@ -4,9 +4,9 @@ import torch.nn.functional as F
 import torchvision.models as models
 
 # 입력으로 받은 소스뷰의 (ResNet feature + Image Color + Segmentation mask)
-class FeatureNet(nn.Module):
+class FeatureNetArchitecture(nn.Module):
     def __init__(self):
-        super(FeatureNet, self).__init__()
+        super(FeatureNetArchitecture, self).__init__()
 
         resnet = models.resnet34(pretrained=True).eval()
 

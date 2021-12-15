@@ -1,147 +1,116 @@
 import torch
 import torch.nn as nn
-import os
+import torch.nn.functional as F
+import pytorch_lightning as pl
+
+from network.nerformer import NerFormerArchitecture
+from network.feature_network import FeatureNetArchitecture
+
+from positional_embedding import HarmonicEmbedding
+from ray_sampling import RaySampler
+from rendering import render_rays
+from utils import *
 
 
-class NerFormer(nn.Module):
-    def __init__(self, d_z):
-        super(NerFormer, self).__init__()
 
-        self.d_z = d_z  # Input feature의 차원
+class FeatureNet(pl.LightningModule):
+    def __init__(self):
+        super().__init__()
+        self.feature_net = FeatureNetArchitecture()
+    
 
-        # input: (N_rays(=Batch), N_s, N_src, d_z)
-        self.linear_1 = nn.Linear(d_z, 80, bias=False)
-        
-        # (N_rays, N_s, N_src, 80)
-        self.TE_1 = nn.Sequential(
-            TransformerEncoder(along_dim="src", feature_dim=80, num_heads=8),          # Pooling transformer encoder
-            TransformerEncoder(along_dim="sample", feature_dim=80, num_heads=8)           # Ray transformer encoder
-        )
-        self.dim_linear_1 = nn.Linear(80, 40)
-        # (N_rays, N_s, N_src, 40)
-        self.TE_2 = nn.Sequential(
-            TransformerEncoder(along_dim="src", feature_dim=40, num_heads=4),          # Pooling transformer encoder
-            TransformerEncoder(along_dim="sample", feature_dim=40, num_heads=4)           # Ray transformer encoder
-        )
-        self.dim_linear_2 = nn.Linear(40, 20)
-        # (N_rays, N_s, N_src, 20)
+    def forward(self, x):
+        feature = self.feature_net(x)
 
-        self.weight_layer = nn.Sequential(
-            nn.Linear(20, 1),
-            nn.Softmax(dim=-2)      # 특정 sample에서 각 src들에 대한 값의 합이 1이 되도록 차원을 설정
-        )
-
-        # color function head
-        # Output shape: (N_s, 3)
-        self.c_head = nn.Sequential(
-            nn.Linear(20, 20),
-            nn.ReLU(),
-            nn.Linear(20, 3)
-        )
-
-        # opacity function head
-        # Output shape: (N_s, 1)
-        self.f_head = nn.Sequential(
-            nn.Linear(20, 1),
-            nn.ReLU()
-        )
+        return feature
 
 
-    def forward(self, input_tensor):
-        # input_tensor: (N_rays(=Batch), N_s, N_src, D_z)
 
-        x = self.linear_1(input_tensor)     # (N_rays, N_s, N_src, 80)
+class NerFormer(pl.LightningModule):
+    def __init__(self, d_z, args):
+        super().__init__()
 
-        x = self.TE_1(x)                    # (N_rays, N_s, N_src, 80)
-        x = self.dim_linear_1(x)              # (N_rays, N_s, N_src, 40)
+        # NerFormer
+        self.nerformer = NerFormerArchitecture(d_z)
+        # Image Feature Net
+        self.feature_net = FeatureNet()
+        self.feature_net.freeze()
+        # Positional Embedding
+        self.PE = HarmonicEmbedding(n_harmonic_functions=args.pe_dim)
+        self.args = args
 
-        x = self.TE_2(x)                    # (N_rays, N_s, N_src, 40)
-        x = self.dim_linear_2(x)              # (N_rays, N_s, N_src, 20)
-        
-        # weighted sum along dim 1
-        weight = self.weight_layer(x)       # (N_rays, N_s, N_src, 1)
-        per_point_features = torch.sum(weight*x, dim=-2)      # (N_rays, N_s, 20)
+    def forward(self, x):
+        output = self.nerformer(x)
 
-        # Color function
-        ray_colors = self.c_head(per_point_features) # (N_rays, N_s, 3)
-        # Opacity function
-        ray_densities = self.f_head(per_point_features) # (N_rays, N_s, 1)
+        return output
 
-        return ray_densities, ray_colors
+    
+    def configure_optimizers(self):
+        optimizer = torch.optim.Adam(self.nerformer.parameters(), lr=0.0005)
+
+        return optimizer
 
 
-# (N_s, N_src, D_z) -> (N_s, N_src, D_z)
-class TransformerEncoder(nn.Module):
-    def __init__(self, along_dim, feature_dim, num_heads):
-        super(TransformerEncoder, self).__init__()
+    def training_step(self, train_batch, batch_idx):
+        # target_idx = 0
+        # sources = [src_idx for src_idx in range(1, args.N_src + 1)]
 
-        self.along_dim = along_dim
-        # Multi-head attention along dim
-        # num_heads = 8 (Transformer 논문에서의 세팅)
-        self.multi_head_att = nn.MultiheadAttention(embed_dim=feature_dim, num_heads=num_heads)
-        self.Q_weights = nn.Linear(feature_dim, feature_dim)
-        self.K_weights = nn.Linear(feature_dim, feature_dim)
-        self.V_weights = nn.Linear(feature_dim, feature_dim)
-        
-        self.dropout_1 = nn.Dropout(0.1)
-        self.dropout_2 = nn.Dropout(0.1)
 
-        self.layer_norm_1 = nn.LayerNorm(feature_dim)
-        self.layer_norm_2 = nn.LayerNorm(feature_dim)
+        # train_batch에서 targe과 source를 정의
+        target, srcs = data_to_frame(train_batch, args.device, target_idx, sources)
 
-        self.two_layer_MLP = nn.Sequential(
-            nn.Linear(feature_dim, feature_dim),
-            nn.ReLU(),
-            nn.Linear(feature_dim, feature_dim)
-        )
-        
+        # source 이미지로부터 iamge feature 추출
+        self.feature_net.eval()
+        with torch.no_grad():
+            feature_maps = self.feature_net(srcs["rgb"], srcs["mask"])
 
-    def forward(self, input_tensor):
-        # input_tensor = Z
+        # target 이미지에서 학습 rays 샘플링
+        ray_sampler = RaySampler(target, target_idx, args.device, args)
+        ray_batch = ray_sampler.random_sample(args.N_rays, args.ray_sampling_mode)
 
-        # Multi Head Att = MHA(Z, dim=dim)
+        # Inference
+        output = render_rays(ray_batch, net, net, feature_maps, sources, args)
 
-        # MultiHead(Q,K,V)
-        # Q: (sequence length, batch, embedding)
-        # K: (sequence length, batch, embedding)
-        # V: (sequence length, batch, embedding)
+        coarse_rgb_loss = mse_loss(output["outputs_coarse"]["rgb"], ray_batch["rgb"])
+        # coarse_mask_loss = bce_loss(output["outputs_coarse"]["mask"][..., 0], ray_batch["mask"])
+        self.log('coarse_rgb_loss', coarse_rgb_loss)
 
-        # Pooling transformer enc
-        if self.along_dim == "src":
-            # 배치로 들어오는 각 샘플들에 대해, N_src개 소스뷰 시퀀스를 입력으로 줌.
-            # (Seq_len, Batch, Features) = (N_src, N_rays*N_s, D_z)
-            input_tensor = input_tensor.permute(2, 0, 1, 3)
-            shape = input_tensor.shape
+        fine_rgb_loss = mse_loss(output["outputs_fine"]["rgb"], ray_batch["rgb"])
+        # fine_mask_loss = bce_loss(output["outputs_fine"]["mask"][..., 0], ray_batch["mask"])
+        self.log('fine_rgb_loss', fine_rgb_loss)
 
-            # Pooling transformer의 Batch에 해당하는
-            # `N_rays` 차원과 `N_s` 차원을 합쳐준다.
-            input_tensor = input_tensor.reshape(shape[0], shape[1]*shape[2], shape[3])
+        total_loss = coarse_rgb_loss + fine_rgb_loss
+        self.log('train_loss', total_loss)
 
-        # Ray transformer enc
-        else:
-            # 배치로 들어오는 각 소스뷰에 대해, N_s개 샘플 시퀀스를 입력으로 줌.
-            # (Seq_len, Batch, Features) = (N_s, N_rays*N_src, D_Z) 
-            input_tensor = input_tensor.permute(1, 0, 2, 3)
-            shape = input_tensor.shape
+        return loss
 
-            # Ray transformer의 Batch에 해당하는
-            # `N_rays` 차원과 `N_src` 차원을 합쳐준다.
-            input_tensor = input_tensor.reshape(shape[0], shape[1]*shape[2], shape[3])
-        
-        query = self.Q_weights(input_tensor)
-        key = self.K_weights(input_tensor)
-        value = self.V_weights(input_tensor)
 
-        x, _ = self.multi_head_att(query, key, value)
-        # Sub-layer MLP
-        x_skip = self.layer_norm_1(input_tensor + self.dropout_1(x))    # Skip + LayerNorm  = Z'
-        x = self.two_layer_MLP(x_skip)                                  # Two-Layer MLP = MLP(Z')
-        x = self.layer_norm_2(x_skip + self.dropout_2(x))               # Skip + LayerNorm = TE^dim(Z)
+    def validation_step(self, val_batch, val_idx):
+        target_idx = 0
+        sources = [src_idx for src_idx in range(1, args.N_src + 1)]
 
-        x = x.reshape(shape[0], shape[1], shape[2], shape[3])   # N_rays 차원을 분리
-        if self.along_dim == "src":
-            x = x.permute(1, 2, 0, 3)           # 원래 차원 순서인 (N_rays, N_s, N_src, D_z)로 변환
-        else:
-            x = x.permute(1, 0, 2, 3)           # 원래 차원 순서인 (N_rays, N_s, N_src, D_z)로 변환
 
-        return x        # shape: (N_rays, N_s, N_src, c_out)
+        # dataloader 아이템에서 targe과 source를 정의
+        target, srcs = data_to_frame(val_batch, args.device, target_idx, sources)
+
+        # source 이미지로부터 iamge feature 추출
+        with torch.no_grad():
+            feature_maps = feature_net(srcs["rgb"], srcs["mask"])
+
+        # target 이미지에서 학습 rays 샘플링
+        ray_sampler = RaySampler(target, target_idx, args.device, args)
+        ray_batch = ray_sampler.random_sample(args.N_rays, args.ray_sampling_mode)
+
+        # Inference
+        output = render_rays(ray_batch, net, net, feature_maps, sources, args)
+
+        coarse_rgb_loss = mse_loss(output["outputs_coarse"]["rgb"], ray_batch["rgb"])
+        # coarse_mask_loss = bce_loss(output["outputs_coarse"]["mask"][..., 0], ray_batch["mask"])
+        self.log('val_coarse_rgb_loss', coarse_rgb_loss)
+
+        fine_rgb_loss = mse_loss(output["outputs_fine"]["rgb"], ray_batch["rgb"])
+        # fine_mask_loss = bce_loss(output["outputs_fine"]["mask"][..., 0], ray_batch["mask"])
+        self.log('val_fine_rgb_loss', fine_rgb_loss)
+
+        total_loss = coarse_rgb_loss + fine_rgb_loss
+        self.log('val_loss', total_loss)

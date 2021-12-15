@@ -1,0 +1,31 @@
+# Directory
+root_dir: ./
+exp_name: config_test
+
+# Dataset options
+device: cuda
+N_src: 3
+N_src_extra: 10
+
+# Training options
+N_rays: 800
+pe_dim: 10
+lr: 0.0005
+n_iters: 100000
+
+# Rendering options
+chunk_size: 3200
+
+# Ray and Point sampling options
+N_samples: 32
+N_importance: 16
+inv_uniform: True
+det: True
+render_stride: 1
+ray_sampling_mode: uniform
+center_ratio: 0.8
+
+# Logging options
+log_img: 2000
+log_loss: 100
+log_weight: 5000
