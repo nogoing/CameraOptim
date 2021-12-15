@@ -51,25 +51,30 @@ def feature_sampling(feature_maps, camera, pts, pe, img_size, src_idxs, padding_
 
 def EARayMarching(ray_densities, ray_colors, z_vals):
     # z_vals: (N_rays, N_samples)
-    # ray_densities: (N_rays, N_samples, 1)
+    # ray_densities: (N_rays, N_samples, 1) --> network의 아웃풋. opacity라고 부르는 값. (=소멸계수. 빛이 가려지는 비율을 뜻함.)
     # ray_colors: (N_rays, N_samples, 3)
 
     # delta 계산
     delta = z_vals[..., 1:] - z_vals[..., :-1]      # (N_rays, N_samples-1)
     delta = torch.cat((delta, delta[..., -1:]), dim=-1)     # (N_rays, N_samples)
 
-    # alpha 계산
+    # Transparency(투명도) 계산
+    # density(=opacity) 증가 >> T 감소
+    # density(=opacity) 감소 >> T 증가
     T = torch.exp(-delta * ray_densities[..., 0])   # (N_rays, N_samples)
+
+    # alpha 계산
     alphas = 1 - T + 1e-10          # (N_rays, N_samples)
 
     # absorption 계산
-    # absorption = torch.cumprod(T, dim=1)        # (N_rays, N_samples)
+    # i번째 샘플에 대해, (i-1)번째 샘플까지의 transparancy가 누적된 값
     # 첫 번째 항으로 1을 넣은 뒤, 마지막 항을 제외하고 누적곱
-    ones = torch.ones(T.shape[0], 1).to(T.device)
-    T_ = torch.cat((ones, T[..., :-1]), dim=1)    
+    ones = torch.ones(T.shape[0], 1).to(T.device)   # (N_rays, 1)
+    T_ = torch.cat((ones, T[..., :-1]), dim=1)      # (N_rays, N_samples)
     absorption = torch.cumprod(T_, dim=1)  # (N_rays, N_samples)
 
     # weights 계산
+    # alpha blending 역할.
     # importance sample을 추출하는 fine 단계에서 사용한다.
     weights = absorption * alphas           # (N_rays, N_samples)
 
@@ -79,16 +84,23 @@ def EARayMarching(ray_densities, ray_colors, z_vals):
     colors = torch.clamp(colors, min=0., max=1.)
     
     # mask 계산
+    # implicit surface에 의해 빛이 흡수된 총량.
+    # alpha value인 mask 값이 1이라는 것은 complete absorption 되었다는 뜻이다.
+    # TODO
+    # mask 값이 전부 1이 나오는데 그럼 저 torch.prod(...)의 값이 다 0이라는 거겠지...
+    # 위에서 alphas 계산한 걸 보면 아주 1e-10을 더해주는데 여기에는 그게 없어서 그런 건가????
     masks = 1 - torch.prod((1 - T), dim=1, keepdim=True)  # (N_rays, 1)
-    
-    # depth_map = torch.sum(wegihts * z_vals, dim=-1)
+
+    # depth 계산
+    # z_vals을 weighted sum 한 것이 depth 값.
+    depth = torch.sum(weights * z_vals, dim=-1)
     
     return {
             "rgb": colors, 
             "weights": weights, 
             "alphas": alphas,
             "mask": masks,
-            # "depth":depth_map
+            "depth":depth
             }
 
 
