@@ -10,7 +10,7 @@ from point_sampling import sample_along_camera_ray
 
 # world points를 각 src view로 projection 한 다음, 해당 지점에서의 img features를 샘플링
 # positional embedding 값과 concat 하여 네트워크에 들어가는 최종 input tensor를 구성하는 함수.
-def feature_sampling(feature_maps, camera, pts, pe, img_size, src_idxs, padding_mode="zeros", interpolation_mode="bilinear"):
+def feature_sampling(feature_maps, camera, pts, pe, img_size, padding_mode="zeros", interpolation_mode="bilinear"):
     # feature_maps: (N_src, 100, H, W).  100 = resnet feature + RGB + Segmentation Mask.
     # pts: (N_rays, N_samples, 3) ---> World Coordinate.
     # pe: (N_rays, N_samples, embedding_dim) ---> Positional Embedding of pts.
@@ -19,10 +19,9 @@ def feature_sampling(feature_maps, camera, pts, pe, img_size, src_idxs, padding_
     N_rays, N_samples = pts.shape[:2]
 
     # pts (world) >>>> projection to each src views
-    proj_points = camera.transform_points_screen(pts.reshape(-1, 3), image_size=img_size)   # (1 + N_src, N_rays*N_samples, 3)
-    src_proj_points = proj_points[src_idxs]   # (N_src, N_rays*N_samples, 3)
+    src_proj_points = camera.transform_points_screen(pts.reshape(-1, 3), image_size=img_size)   # (N_src, N_rays*N_samples, 3)
 
-    screen_to_ndc_transforms = pytorch3d.renderer.cameras.get_screen_to_ndc_transform(camera, image_size=img_size, with_xyflip=True)[src_idxs]
+    screen_to_ndc_transforms = pytorch3d.renderer.cameras.get_screen_to_ndc_transform(camera, image_size=img_size, with_xyflip=True)
     src_proj_points_ndc = screen_to_ndc_transforms.transform_points(src_proj_points)
     
     # grid 좌표축 방향은 ndc 좌표축과 반대라서 -1을 곱한다.
@@ -161,7 +160,7 @@ def render_rays(ray_batch,
                 coarse_model,
                 fine_model,
                 feature_maps,
-                src_idxs,
+                PE,
                 args,
                 # white_bkgd=False
                 ):
@@ -194,10 +193,10 @@ def render_rays(ray_batch,
     H, W = feature_maps.shape[-2:]
 
     # Positional Embedding
-    positional_embedding = args.PE(pts)
+    positional_embedding = PE(pts)
 
     # Input tensor 구성
-    input_tensor = feature_sampling(feature_maps, ray_batch["camera"], pts, positional_embedding, (H, W), src_idxs)
+    input_tensor = feature_sampling(feature_maps, ray_batch["src_cameras"], pts, positional_embedding, (H, W))
 
     coarse_densities, coarse_colors = coarse_model(input_tensor)
     outputs_coarse = EARayMarching(coarse_densities, coarse_colors, z_vals)
@@ -240,10 +239,10 @@ def render_rays(ray_batch,
         pts = z_vals.unsqueeze(2) * viewdirs + ray_o  # [N_rays, N_samples + N_importance, 3]
 
         # Positional Embedding
-        positional_embedding = args.PE(pts)
+        positional_embedding = PE(pts)
 
         # Input tensor 구성
-        input_tensor = feature_sampling(feature_maps, ray_batch["camera"], pts, positional_embedding, (H, W), src_idxs)
+        input_tensor = feature_sampling(feature_maps, ray_batch["src_cameras"], pts, positional_embedding, (H, W))
 
         coarse_densities, coarse_colors = fine_model(input_tensor)
         outputs_fine = EARayMarching(coarse_densities, coarse_colors, z_vals)
@@ -255,10 +254,11 @@ def render_rays(ray_batch,
 # 한 이미지 전체를 렌더링하는 함수.
 def render_image(ray_sampler,
                  ray_batch,
-                 src_idxs,
-                 model,
+                 coarse_model,
+                 fine_model,
                  feature_maps,
-                 args,
+                 PE,
+                 args
                  ):
 
 
@@ -267,19 +267,17 @@ def render_image(ray_sampler,
 
     N_rays = ray_batch['ray_o'].shape[0]
     chunk_size = args.chunk_size
-
     for i in range(0, N_rays, chunk_size):
         ray_chunk = OrderedDict()
         for k in ray_batch:
-            if k in ['camera', 'depth_range']:
+            if k in ['src_cameras', 'depth_range']:
                 ray_chunk[k] = ray_batch[k]
             # ray_o, ray_d, rgb, mask는 chunck_size씩 끊어서...
             elif ray_batch[k] is not None:
                 ray_chunk[k] = ray_batch[k][i:i+chunk_size]
             else:
                 ray_chunk[k] = None
-
-        output = render_rays(ray_chunk, model, model, feature_maps, src_idxs, args)
+        output = render_rays(ray_chunk, coarse_model, fine_model, feature_maps, PE, args)
 
         # handle both coarse and fine outputs
         # cache chunk results on cpu

@@ -12,29 +12,30 @@ import pytorch3d
 
 
 class RaySampler(object):
-    def __init__(self, data, target_cam_idx, device, args):
+    def __init__(self, tgt_data, src_cam):
         super().__init__()
 
         self.render_stride = 1
-        self.device = device
+        # self.device = device
 
         # rays_o, rays_d shape과 동일하게 일렬로 펴서 저장
-        self.rgb = data["rgb"].permute(1, 2, 0).view(-1, 3)     # (H*W, 3)
-        self.rgb_path = data["rgb_path"] if "rgb_path" in data.keys() else None
+        self.rgb = tgt_data["rgb"].permute(1, 2, 0).view(-1, 3)     # (H*W, 3)
+        self.rgb_path = tgt_data["rgb_path"] if "rgb_path" in tgt_data.keys() else None
 
         # rays_o, rays_d shape과 동일하게 일렬로 펴서 저장
-        self.mask = data["mask"].view(-1)       # (H*W, 3)
+        self.mask = tgt_data["mask"].view(-1)       # (H*W, 3)
         
-        self.camera = data["camera"]
-        self.target_cam_idx = target_cam_idx
+        self.tgt_camera = tgt_data["camera"]
+        self.src_camera = src_cam
 
-        self.depth_range = data["depth_range"]
+        self.depth_range = tgt_data["depth_range"]
 
-        self.H, self.W = data["rgb"].shape[-2:]
+        self.H, self.W = tgt_data["rgb"].shape[-2:]
 
-        self.ndc_transform = pytorch3d.renderer.cameras.get_screen_to_ndc_transform(self.camera, image_size=(self.H, self.W), with_xyflip=True)[target_cam_idx]
-        self.K_transform = self.camera.get_projection_transform()[target_cam_idx]
-        self.c2w_transform = self.camera.get_world_to_view_transform()[target_cam_idx].inverse()
+        # target 카메라의 transform 정의
+        self.ndc_transform = pytorch3d.renderer.cameras.get_screen_to_ndc_transform(self.tgt_camera, image_size=(self.H, self.W), with_xyflip=True).to(self.rgb.device)
+        self.K_transform = self.tgt_camera.get_projection_transform()
+        self.c2w_transform = self.tgt_camera.get_world_to_view_transform().inverse()
 
         # 배치 내의 모든 이미지에 대해 전체 픽셀로 향하는 각 ray들을 정의
         self.rays_o, self.rays_d = self.get_rays(self.render_stride)
@@ -53,15 +54,16 @@ class RaySampler(object):
         v = v.reshape(-1).astype(dtype=np.float32)  # + 0.5
 
         pixels = np.stack((u, v, np.ones_like(u)), axis=1)  # (3, H*W)
-        pixels = torch.from_numpy(pixels).to(self.device)       # pixels --> Screen coord
+        # pixels = torch.from_numpy(pixels).to(self.device)       # pixels --> Screen coord
+        pixels = torch.from_numpy(pixels).to(self.rgb.device)       # pixels --> Screen coord
 
         # Screen >>> NDC
         ndc_pixels = self.ndc_transform.transform_points(pixels)
         # NDC >>> Camera
         cam_rays = self.K_transform.inverse().transform_points(ndc_pixels)
         # Camera >>> World
-        rays_d = self.c2w_transform.transform_points(cam_rays)
-        rays_o = self.camera.get_camera_center()[self.target_cam_idx].unsqueeze(0).repeat(rays_d.shape[0], 1)
+        rays_d = self.c2w_transform.transform_points(cam_rays)      # (H*W, 3)
+        rays_o = self.tgt_camera.get_camera_center().repeat(rays_d.shape[0], 1)     # (1, 3) >> (H*W, 3)
 
         # 위의 rays_d는 rotation + tanslation까지 모두 변환된 것이기 때문에 
         # 해당 이미지 픽셀로 향하는 ray의 `방향`이 아니라
@@ -117,26 +119,35 @@ class RaySampler(object):
         # 샘플링 된 픽셀의 target Mask 값
         mask = self.mask[select_inds]
 
+        # ret = {
+        #         "ray_o": rays_o.to(self.device),
+        #         "ray_d": rays_d.to(self.device),
+        #         "depth_range": self.depth_range.to(self.device),
+        #         "camera": self.camera.to(self.device),
+        #         "rgb": rgb.to(self.device),
+        #         "mask": mask.to(self.device),
+        #         }
         ret = {
-                "ray_o": rays_o.to(self.device),
-                "ray_d": rays_d.to(self.device),
-                "depth_range": self.depth_range.to(self.device),
-                "camera": self.camera.to(self.device),
-                "rgb": rgb.to(self.device),
-                "mask": mask.to(self.device),
-                }
+                "ray_o": rays_o,
+                "ray_d": rays_d,
+                "depth_range": self.depth_range,
+                "src_cameras": self.src_camera,
+                "rgb": rgb,
+                "mask": mask,
+            }
         
         return ret
 
     
     def get_all(self):
+
         ret = {
-                "ray_o": self.rays_o.to(self.device),
-                "ray_d": self.rays_d.to(self.device),
-                "depth_range": self.depth_range.to(self.device),
-                "camera": self.camera.to(self.device),
-                "rgb": self.rgb.to(self.device),
-                "mask": self.mask.to(self.device),
-                }
+                "ray_o": self.rays_o,
+                "ray_d": self.rays_d,
+                "depth_range": self.depth_range,
+                "src_cameras": self.src_camera,
+                "rgb": self.rgb,
+                "mask": self.mask,
+            }
 
         return ret
