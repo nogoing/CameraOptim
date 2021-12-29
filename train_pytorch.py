@@ -96,7 +96,8 @@ def train(args):
     print(f"D_z: {d_z}")
 
     # Nerforemr Network
-    net = NerFormerArchitecture(d_z=d_z).to(args.device)
+    coarse_net = NerFormerArchitecture(d_z=d_z).to(args.device)
+    # fine_net = NerFormerArchitecture(d_z=d_z).to(args.device)
 
     # FeatureNet
     feature_net = FeatureNetArchitecture().to(args.device)
@@ -111,7 +112,12 @@ def train(args):
     scalars_to_log = {}
     
     # optimizer
-    optimizer = torch.optim.Adam(net.parameters(), lr=args.lr)
+    # optimizer = torch.optim.Adam([coarse_net.parameters(), fine_net.parameters()], lr=args.lr)
+    optimizer = torch.optim.Adam([
+                {'params': coarse_net.parameters()},
+                # {'params': fine_net.parameters()},
+                ], 
+                lr=args.lr)
 
     n_iters = args.n_iters
     global_step = 0
@@ -140,7 +146,7 @@ def train(args):
             # 타겟 이미지에서 N_rays개의 ray 샘플링
             ray_batch = ray_sampler.random_sample(args.N_rays, args.ray_sampling_mode, args.center_ratio)
 
-            output = render_rays(ray_batch, net, net, feature_maps, PE, args)
+            output = render_rays(ray_batch, coarse_net, coarse_net, feature_maps, PE, args)
 
             optimizer.zero_grad()
 
@@ -186,11 +192,12 @@ def train(args):
 
                 to_save = {
                             'optimizer': optimizer.state_dict(),
-                            'net': net.state_dict(),
+                            'coarse_net': coarse_net.state_dict(),
+                            # 'fine_net': fine_net.state_dict(),
                             }
                 torch.save(to_save, save_path)
 
-            # validation 시각화 저장
+            # 시각화 저장
             if global_step % args.step_img == 0:
                 ######################## current training data ########################
                 print(f"Step[{global_step+1}/{n_iters}]: Training data 결과 저장...")
@@ -205,7 +212,7 @@ def train(args):
                         "mask":train_gt_mask,
                     }
                 # log
-                log_view_to_tensorboard(args, writer, global_step, net, net, train_ray_sampler, feature_maps,
+                log_view_to_tensorboard(args, writer, global_step, coarse_net, coarse_net, train_ray_sampler, feature_maps,
                                     srcs, PE, gts, prefix='train/')
 
                 ######################## random validation data ########################
@@ -225,7 +232,7 @@ def train(args):
                     val_feature_maps = feature_net(val_srcs["rgb"], val_srcs["mask"])
 
                 # validation ray sampler 생성
-                val_ray_sampler = RaySampler(target, srcs["camera"])
+                val_ray_sampler = RaySampler(val_target, val_srcs["camera"])
                 H, W = val_ray_sampler.H, val_ray_sampler.W
                 val_gt_img = val_ray_sampler.rgb.reshape(H, W, 3)
                 val_gt_mask = val_ray_sampler.mask.reshape(H, W, 1)
@@ -234,7 +241,7 @@ def train(args):
                         "mask":val_gt_mask,
                     }
                 # log
-                log_view_to_tensorboard(args, writer, global_step, net, net, val_ray_sampler, val_feature_maps,
+                log_view_to_tensorboard(args, writer, global_step, coarse_net, coarse_net, val_ray_sampler, val_feature_maps,
                                     val_srcs, PE, gts, prefix='val/')
 
             global_step += 1

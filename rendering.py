@@ -88,7 +88,7 @@ def EARayMarching(ray_densities, ray_colors, z_vals):
     # TODO
     # mask 값이 전부 1이 나오는데 그럼 저 torch.prod(...)의 값이 다 0이라는 거겠지...
     # 위에서 alphas 계산한 걸 보면 아주 1e-10을 더해주는데 여기에는 그게 없어서 그런 건가????
-    masks = 1 - torch.prod((1 - T), dim=1, keepdim=True)  # (N_rays, 1)
+    masks = 1 - torch.prod((1 - T + 1e-10), dim=1, keepdim=True)  # (N_rays, 1)
 
     # depth 계산
     # z_vals을 weighted sum 한 것이 depth 값.
