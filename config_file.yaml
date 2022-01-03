@@ -1,6 +1,6 @@
 # Directory
 root_dir: ./
-exp_name: 1228_inv_depth_test
+exp_name: 1231_det_False
 
 # Dataset options
 device: cuda
@@ -19,8 +19,8 @@ chunk_size: 3200
 # Ray and Point sampling options
 N_samples: 32
 N_importance: 16
-inv_uniform: True
-det: True
+inv_uniform: False
+det: False
 render_stride: 1
 ray_sampling_mode: uniform
 center_ratio: 0.8

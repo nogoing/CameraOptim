@@ -32,17 +32,19 @@ class NerFormer(pl.LightningModule):
 
         # NerFormer
         self.nerformer = NerFormerArchitecture(d_z)
+
         # Image Feature Net
         self.feature_net = FeatureNet()
         self.feature_net.freeze()
+
         # Positional Embedding
         self.PE = HarmonicEmbedding(n_harmonic_functions=args.pe_dim)
         
         self.args = args
     
 
-    def forward(self, x):
-        output = self.nerformer(x)
+    def forward(self, input_tensor):
+        output = self.nerformer(input_tensor)
 
         return output
 
@@ -55,6 +57,10 @@ class NerFormer(pl.LightningModule):
 
     def mse_loss(self, preds, labels):
         return F.mse_loss(preds, labels, reduction="sum")
+
+
+    def masked_mse_loss(self, preds, labels, masks):
+        return F.mse_loss(preds[masks!=0], labels[masks!=0], reduction="sum")
 
 
     def bce_loss(self, preds, labels):
@@ -77,15 +83,19 @@ class NerFormer(pl.LightningModule):
         # Inference
         output = render_rays(ray_batch, self.nerformer, self.nerformer, feature_maps, self.PE, self.args)
 
-        coarse_rgb_loss = self.mse_loss(output["outputs_coarse"]["rgb"], ray_batch["rgb"])
-        # coarse_mask_loss = self.bce_loss(output["outputs_coarse"]["mask"][..., 0], ray_batch["mask"])
+        # Loss
+        coarse_rgb_loss = self.masked_mse_loss(output["outputs_coarse"]["rgb"], ray_batch["rgb"], ray_batch["mask"])
+        coarse_mask_loss = self.bce_loss(output["outputs_coarse"]["mask"][..., 0], ray_batch["mask"])
+        coarse_loss = coarse_rgb_loss + coarse_mask_loss
 
-        fine_rgb_loss = self.mse_loss(output["outputs_fine"]["rgb"], ray_batch["rgb"])
-        # fine_mask_loss = self.bce_loss(output["outputs_fine"]["mask"][..., 0], ray_batch["mask"])
+        fine_rgb_loss = self.masked_mse_loss(output["outputs_fine"]["rgb"], ray_batch["rgb"], ray_batch["mask"])
+        fine_mask_loss = self.bce_loss(output["outputs_fine"]["mask"][..., 0], ray_batch["mask"])
+        fine_loss = fine_rgb_loss + fine_mask_loss
 
-        total_loss = coarse_rgb_loss + fine_rgb_loss
+        total_loss = coarse_loss + fine_loss
 
-        ###### training loss logging
+        ########################## logging ##########################
+        # training loss
         if self.global_step % self.args.step_loss == 0 or self.global_step < 10:
             logstr = 'Epoch: {}  step: {} '.format(self.current_epoch, self.global_step)
             logstr += ' {}: {:.6f}'.format("coarse_rgb_loss", coarse_rgb_loss)
@@ -96,7 +106,7 @@ class NerFormer(pl.LightningModule):
             self.log('train/fine_rgb_loss', fine_rgb_loss)
             self.log('train/total_loss', total_loss)
 
-        ###### training 시각화 결과 logging
+        # training 데이터 시각화
         if self.global_step % self.args.step_img == 0:
             print(f"Step[{self.global_step+1}]: Training 시각화 결과 저장...")
             H, W = ray_sampler.H, ray_sampler.W
@@ -118,7 +128,7 @@ class NerFormer(pl.LightningModule):
             self.logger.experiment.add_image("train/[rgb]coarse-fine", depth_im, self.global_step)
             self.logger.experiment.add_image("train/[rgb]GT-coarse-fine", mask_im, self.global_step)
 
-        # ###### save weight
+        # # weight
         # if self.global_step % self.args.step_weights == 0:
         #     print(f"Step[{self.global_step+1}/]: Checkpoint 저장...")
         #     save_path = os.path.join(self.dirpath, "model_{:06d}.ckpt".format(self.global_step))
@@ -164,7 +174,7 @@ class NerFormer(pl.LightningModule):
             return val_step_output
 
 
-    ###### validation 시각화 결과 logging
+    # validation 데이터 시각화 
     def validation_epoch_end(self, outputs):
         if self.current_epoch % self.args.epoch_val_img == 0:
             print(f"Step[{self.global_step+1}]: Validation 시각화 결과 저장...")
