@@ -45,23 +45,20 @@ def bce_loss(preds, labels):
 
 
 def train(args):
-    category = "teddybear"
-    task = "singlesequence"
-    single_sequence_id = 0
-
+    # CO3D Dataset
     datasets = dataset_zoo(
-            category=category,
-            assert_single_seq=task == "singlesequence",
-            dataset_name=f"co3d_{task}",
+            category=args.co3d_category,
+            assert_single_seq=(args.co3d_task == "singlesequence"),
+            dataset_name=f"co3d_{args.co3d_task}",
             test_on_train=False,
             load_point_clouds=False,
-            test_restrict_sequence_id=single_sequence_id,
+            test_restrict_sequence_id=args.co3d_single_sequence_id,
         )
 
-
+    # CO3D Dataset loader
     dataloaders = dataloader_zoo(
             datasets,
-            dataset_name=f"co3d_{task}",
+            dataset_name=f"co3d_{args.co3d_task}",
             batch_size=(args.N_src + args.N_src_extra),
             # num_workers=1,
             dataset_len=1000,
@@ -169,7 +166,7 @@ def train(args):
             dt = time.time() - time0
 
             # loss 출력
-            if global_step % args.step_loss == 0 or global_step < 10:
+            if global_step % args.log_loss_step == 0 or global_step < 10:
                 scalars_to_log['train/coarse-rgb-loss'] = coarse_rgb_loss
                 scalars_to_log['train/coarse-mask-loss'] = coarse_mask_loss
 
@@ -186,7 +183,7 @@ def train(args):
                 print('each iter time {:.05f} seconds'.format(dt))
 
             # checkpoint 저장
-            if global_step % args.step_weight == 0:
+            if global_step % args.log_weight_step == 0:
                 print(f"Step[{global_step+1}/{n_iters}]: Checkpoint 저장...")
                 save_path = os.path.join(out_folder, "model_{:06d}.pth".format(global_step))
 
@@ -198,7 +195,7 @@ def train(args):
                 torch.save(to_save, save_path)
 
             # 시각화 저장
-            if global_step % args.step_img == 0:
+            if args.log_img and global_step % args.log_img_step == 0:
                 ######################## current training data ########################
                 print(f"Step[{global_step+1}/{n_iters}]: Training data 결과 저장...")
 

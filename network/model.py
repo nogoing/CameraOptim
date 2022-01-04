@@ -68,47 +68,53 @@ class NerFormer(pl.LightningModule):
 
 
     def training_step(self, train_batch, batch_idx):
-        # train_batch에서 targe과 source를 정의
+        ##################### target, source data frame 구성 #####################
         target, srcs = data_to_frame(train_batch, self.args.N_src)
 
-        # source 이미지로부터 iamge feature 추출
+        ##################### source feature map 구성 #####################
         self.feature_net.eval()
         with torch.no_grad():
             feature_maps = self.feature_net(srcs["rgb"], srcs["mask"])
 
-        # target 이미지에서 학습 rays 샘플링
+        # ray sampler 생성
         ray_sampler = RaySampler(target, srcs["camera"])
+        # 타겟 이미지에서 N_rays개의 ray 샘플링
         ray_batch = ray_sampler.random_sample(self.args.N_rays, self.args.ray_sampling_mode, self.args.center_ratio)
 
         # Inference
         output = render_rays(ray_batch, self.nerformer, self.nerformer, feature_maps, self.PE, self.args)
 
-        # Loss
+        # Loss - coarse step
         coarse_rgb_loss = self.masked_mse_loss(output["outputs_coarse"]["rgb"], ray_batch["rgb"], ray_batch["mask"])
         coarse_mask_loss = self.bce_loss(output["outputs_coarse"]["mask"][..., 0], ray_batch["mask"])
         coarse_loss = coarse_rgb_loss + coarse_mask_loss
-
+        # Loss - fine step
         fine_rgb_loss = self.masked_mse_loss(output["outputs_fine"]["rgb"], ray_batch["rgb"], ray_batch["mask"])
         fine_mask_loss = self.bce_loss(output["outputs_fine"]["mask"][..., 0], ray_batch["mask"])
         fine_loss = fine_rgb_loss + fine_mask_loss
-
+        # Total Loss
         total_loss = coarse_loss + fine_loss
 
         ########################## logging ##########################
-        # training loss
-        if self.global_step % self.args.step_loss == 0 or self.global_step < 10:
+        # Loss
+        if self.global_step % self.args.log_loss_step == 0 or self.global_step < 10:
             logstr = 'Epoch: {}  step: {} '.format(self.current_epoch, self.global_step)
-            logstr += ' {}: {:.6f}'.format("coarse_rgb_loss", coarse_rgb_loss)
-            logstr += ' {}: {:.6f}'.format("fine_rgb_loss", fine_rgb_loss)
+            logstr += ' {}: {:.6f} /'.format("coarse_rgb_loss", coarse_rgb_loss)
+            logstr += ' {}: {:.6f} /'.format("coarse_mask_loss", coarse_mask_loss)
+            logstr += ' {}: {:.6f} /'.format("fine_rgb_loss", fine_rgb_loss)
+            logstr += ' {}: {:.6f}'.format("fine_mask_loss", fine_mask_loss)
             print(logstr)
 
             self.log('train/coarse_rgb_loss', coarse_rgb_loss)
+            self.log('train/coarse_mask_loss', coarse_mask_loss)
             self.log('train/fine_rgb_loss', fine_rgb_loss)
+            self.log('train/fine_mask_loss', fine_mask_loss)
             self.log('train/total_loss', total_loss)
 
-        # training 데이터 시각화
-        if self.global_step % self.args.step_img == 0:
-            print(f"Step[{self.global_step+1}]: Training 시각화 결과 저장...")
+        # 시각화
+        if self.args.log_img and self.global_step % self.args.log_img_step == 0:
+            print(f"Epoch[{self.current_epoch+1}]/Step[{self.global_step+1}]: Training 시각화 결과 저장...")
+            
             H, W = ray_sampler.H, ray_sampler.W
             gt_img = ray_sampler.rgb.reshape(H, W, 3)
             gt_mask = ray_sampler.mask.reshape(H, W, 1)
@@ -125,45 +131,55 @@ class NerFormer(pl.LightningModule):
 
             self.logger.experiment.add_image("train/[rgb]sources", srcs_im, self.global_step)
             self.logger.experiment.add_image("train/[rgb]GT-coarse-fine", rgb_im, self.global_step)
-            self.logger.experiment.add_image("train/[rgb]coarse-fine", depth_im, self.global_step)
-            self.logger.experiment.add_image("train/[rgb]GT-coarse-fine", mask_im, self.global_step)
+            self.logger.experiment.add_image("train/[depth]coarse-fine", depth_im, self.global_step)
+            self.logger.experiment.add_image("train/[mask]GT-coarse-fine", mask_im, self.global_step)
 
         # # weight
-        # if self.global_step % self.args.step_weights == 0:
+        # if self.global_step % self.args.log_weight_step == 0:
         #     print(f"Step[{self.global_step+1}/]: Checkpoint 저장...")
         #     save_path = os.path.join(self.dirpath, "model_{:06d}.ckpt".format(self.global_step))
 
         #     self.trainer.save_checkpoint(save_path)
-
+        
+        return total_loss
 
     def validation_step(self, val_batch, batch_idx):
-        # dataloader 아이템에서 targe과 source를 정의
+        ##################### target, source data frame 구성 #####################
         target, srcs = data_to_frame(val_batch, self.args.N_src)
 
-        # source 이미지로부터 iamge feature 추출
+        ##################### source feature map 구성 #####################
         self.feature_net.eval()
         with torch.no_grad():
             feature_maps = self.feature_net(srcs["rgb"], srcs["mask"])
 
-        # target 이미지에서 학습 rays 샘플링
+        # ray sampler 생성
         ray_sampler = RaySampler(target, srcs["camera"])
+        # 타겟 이미지에서 N_rays개의 ray 샘플링
         ray_batch = ray_sampler.random_sample(self.args.N_rays, self.args.ray_sampling_mode, self.args.center_ratio)
 
         # Inference
         output = render_rays(ray_batch, self.nerformer, self.nerformer, feature_maps, self.PE, self.args)
 
-        coarse_rgb_loss = self.mse_loss(output["outputs_coarse"]["rgb"], ray_batch["rgb"])
-        # coarse_mask_loss = self.bce_loss(output["outputs_coarse"]["mask"][..., 0], ray_batch["mask"])
+        # Loss - coarse step
+        coarse_rgb_loss = self.masked_mse_loss(output["outputs_coarse"]["rgb"], ray_batch["rgb"], ray_batch["mask"])
+        coarse_mask_loss = self.bce_loss(output["outputs_coarse"]["mask"][..., 0], ray_batch["mask"])
+        coarse_loss = coarse_rgb_loss + coarse_mask_loss
+        # Loss - fine step
+        fine_rgb_loss = self.masked_mse_loss(output["outputs_fine"]["rgb"], ray_batch["rgb"], ray_batch["mask"])
+        fine_mask_loss = self.bce_loss(output["outputs_fine"]["mask"][..., 0], ray_batch["mask"])
+        fine_loss = fine_rgb_loss + fine_mask_loss
+        # Total Loss
+        total_loss = coarse_loss + fine_loss
+
+        ########################## logging ##########################
+        # Loss
         self.log('val/coarse_rgb_loss', coarse_rgb_loss)
-
-        fine_rgb_loss = self.mse_loss(output["outputs_fine"]["rgb"], ray_batch["rgb"])
-        # fine_mask_loss = self.bce_loss(output["outputs_fine"]["mask"][..., 0], ray_batch["mask"])
+        self.log('val/coarse_mask_loss', coarse_mask_loss)
         self.log('val/fine_rgb_loss', fine_rgb_loss)
+        self.log('val/fine_mask_loss', fine_mask_loss)
+        self.log('val/total_loss', total_loss)
 
-        total_loss = coarse_rgb_loss + fine_rgb_loss
-        self.log('val/total_loss', total_loss, prog_bar=True)
-
-        # 마지막 배치의 결과만 logging 함수로 전달
+        # 마지막 배치의 시각화 결과만 logging 함수로 전달
         if batch_idx == self.args.val_len - 1 and self.current_epoch % self.args.epoch_val_img == 0:
             val_step_output = {
                                 "srcs":srcs,
@@ -177,14 +193,15 @@ class NerFormer(pl.LightningModule):
     # validation 데이터 시각화 
     def validation_epoch_end(self, outputs):
         if self.current_epoch % self.args.epoch_val_img == 0:
-            print(f"Step[{self.global_step+1}]: Validation 시각화 결과 저장...")
+            print(f"Epoch[{self.current_epoch+1}]/Step[{self.global_step+1}]: Validation 시각화 결과 저장...")
+            
             val_outputs = outputs[-1]
+
+            val_ray_sampler = val_outputs["ray_sampler"]
             val_srcs = val_outputs["srcs"]
             val_feature_maps = val_outputs["feature_maps"]
-            val_ray_sampler = val_outputs["ray_sampler"]
 
             H, W = val_ray_sampler.H, val_ray_sampler.W
-
             gt_img = val_ray_sampler.rgb.reshape(H, W, 3)
             gt_mask = val_ray_sampler.mask.reshape(H, W, 1)
             gts = {
@@ -201,5 +218,5 @@ class NerFormer(pl.LightningModule):
 
             self.logger.experiment.add_image("val/[rgb]sources", srcs_im, self.global_step)
             self.logger.experiment.add_image("val/[rgb]GT-coarse-fine", rgb_im, self.global_step)
-            self.logger.experiment.add_image("val/[rgb]coarse-fine", depth_im, self.global_step)
-            self.logger.experiment.add_image("val/[rgb]GT-coarse-fine", mask_im, self.global_step)
+            self.logger.experiment.add_image("val/[depth]coarse-fine", depth_im, self.global_step)
+            self.logger.experiment.add_image("val/[mask]GT-coarse-fine", mask_im, self.global_step)
