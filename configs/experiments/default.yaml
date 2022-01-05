@@ -1,0 +1,9 @@
+N_rays: 800
+
+N_src: 3
+N_src_extra: 10
+
+chunk_size: 3200
+
+lr: 0.0005
+n_iters: 20000

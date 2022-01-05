@@ -31,8 +31,8 @@ def train(args):
             dataset_name=f"co3d_{args.co3d_task}",
             batch_size=(args.N_src + args.N_src_extra),
             # num_workers=1,
-            dataset_len=1000,
-            dataset_len_val=10,
+            dataset_len=args.train_len,
+            dataset_len_val=args.val_len,
             images_per_seq_options=[100],
         )
     train_loader = dataloaders["train"]

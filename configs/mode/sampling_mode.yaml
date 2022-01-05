@@ -1,0 +1,15 @@
+pe_dim: 10
+
+N_samples: 32
+N_importance: 16
+
+inv_uniform: False
+det: False
+
+render_stride: 1
+
+ray_sampling_mode: center
+center_ratio: 0.8
+
+feature_padding_mode: zeros
+feature_interpolation_mode: bilinear

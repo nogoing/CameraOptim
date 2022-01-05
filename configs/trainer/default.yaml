@@ -1,0 +1,10 @@
+_target_: pytorch_lightning.Trainer
+
+gpus: 1
+num_nodes: 1
+
+min_epochs: 1
+max_epochs: 20
+
+val_check_interval: 1.0
+num_sanity_val_steps: 0
