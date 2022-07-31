@@ -1,2 +1,5 @@
-# nerformer
-NerFormer architecture in CO3D paper
+# Multi-View Neural Rendering with Optimizing Camera Parameters
+
+***
+
+## Overview
