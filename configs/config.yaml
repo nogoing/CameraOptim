@@ -1,13 +1,15 @@
 defaults:
   - _self_
   - trainer: default.yaml
-  - model: null
+  - model: nerformer.yaml
   - datamodule: co3d_datamodule.yaml
+  # - datamodule: nerf_synthetic_datamodule.yaml
+  - callbacks: default.yaml
   - logger: tensorboard.yaml
 
-  - mode: sampling_mode.yaml
+  - mode: null
 
-  - experiment: defaul.yaml
+  - experiment: null
 
   # enable color logging
   - override hydra/hydra_logging: colorlog
@@ -33,7 +35,7 @@ ignore_warnings: True
 test_after_training: True
 
 # seed for random number generators in pytorch, numpy and python.random
-seed: null
+seed: 70
 
 # name of the run is accessed by loggers
 # should be used along with experiment mode

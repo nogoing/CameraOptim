@@ -12,11 +12,10 @@ import pytorch3d
 
 
 class RaySampler(object):
-    def __init__(self, tgt_data, src_cam):
+    def __init__(self, tgt_data, src_cam, noise_src_cam=None):
         super().__init__()
 
         self.render_stride = 1
-        # self.device = device
 
         # rays_o, rays_d shape과 동일하게 일렬로 펴서 저장
         self.rgb = tgt_data["rgb"].permute(1, 2, 0).view(-1, 3)     # (H*W, 3)
@@ -27,6 +26,7 @@ class RaySampler(object):
         
         self.tgt_camera = tgt_data["camera"]
         self.src_camera = src_cam
+        self.noise_src_camera = noise_src_cam
 
         self.depth_range = tgt_data["depth_range"]
 
@@ -116,22 +116,17 @@ class RaySampler(object):
 
         # 샘플링 된 픽셀의 target RGB 값
         rgb = self.rgb[select_inds]
+  
         # 샘플링 된 픽셀의 target Mask 값
         mask = self.mask[select_inds]
 
-        # ret = {
-        #         "ray_o": rays_o.to(self.device),
-        #         "ray_d": rays_d.to(self.device),
-        #         "depth_range": self.depth_range.to(self.device),
-        #         "camera": self.camera.to(self.device),
-        #         "rgb": rgb.to(self.device),
-        #         "mask": mask.to(self.device),
-        #         }
         ret = {
                 "ray_o": rays_o,
                 "ray_d": rays_d,
                 "depth_range": self.depth_range,
+                "tgt_camera": self.tgt_camera,
                 "src_cameras": self.src_camera,
+                "noise_src_cameras": self.noise_src_camera,
                 "rgb": rgb,
                 "mask": mask,
             }
@@ -145,7 +140,9 @@ class RaySampler(object):
                 "ray_o": self.rays_o,
                 "ray_d": self.rays_d,
                 "depth_range": self.depth_range,
+                "tgt_camera": self.tgt_camera,
                 "src_cameras": self.src_camera,
+                "noise_src_cameras": self.noise_src_camera,
                 "rgb": self.rgb,
                 "mask": self.mask,
             }

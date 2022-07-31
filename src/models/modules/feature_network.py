@@ -54,7 +54,6 @@ class FeatureNetArchitecture(nn.Module):
 
         feature_maps.append(orig_img)
         feature_maps.append(mask)
-        
         # feature_maps = [ResNet Features, RGB Image, Segmentation Mask]
         # 각 feature의 shape은 (1, C, H, W) ?
         resnet_feature = torch.cat(feature_maps, dim=1)   # 채널 기준으로 이어붙임.

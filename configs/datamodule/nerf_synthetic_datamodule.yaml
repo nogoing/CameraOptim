@@ -1,0 +1,5 @@
+dataset: nerf_synthetic
+
+scenes: drums,hotdog,lego
+
+N_src: 3

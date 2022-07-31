@@ -1,3 +1,12 @@
-co3d_category: teddybear
+dataset: co3d
+
+# CO3D
+co3d_category: donut
 co3d_task: singlesequence
-co3d_single_sequence_id: 0
+co3d_single_sequence_id: 1
+
+N_src: 3
+N_src_extra: 10
+
+train_len: 1000
+val_len: 10

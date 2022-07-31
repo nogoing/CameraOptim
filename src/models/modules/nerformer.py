@@ -17,11 +17,27 @@ class NerFormerArchitecture(nn.Module):
             TransformerEncoder(along_dim="src", feature_dim=80, num_heads=8),          # Pooling transformer encoder
             TransformerEncoder(along_dim="sample", feature_dim=80, num_heads=8)           # Ray transformer encoder
         )
+        self.TE_1_2 = nn.Sequential(
+            TransformerEncoder(along_dim="src", feature_dim=80, num_heads=8),          # Pooling transformer encoder
+            TransformerEncoder(along_dim="sample", feature_dim=80, num_heads=8)           # Ray transformer encoder
+        )
+        self.TE_1_3 = nn.Sequential(
+            TransformerEncoder(along_dim="src", feature_dim=80, num_heads=8),          # Pooling transformer encoder
+            TransformerEncoder(along_dim="sample", feature_dim=80, num_heads=8)           # Ray transformer encoder
+        )
         self.dim_linear_1 = nn.Linear(80, 40)
         # (N_rays, N_s, N_src, 40)
         self.TE_2 = nn.Sequential(
             TransformerEncoder(along_dim="src", feature_dim=40, num_heads=4),          # Pooling transformer encoder
             TransformerEncoder(along_dim="sample", feature_dim=40, num_heads=4)           # Ray transformer encoder
+        )
+        self.TE_2_2 = nn.Sequential(
+            TransformerEncoder(along_dim="src", feature_dim=40, num_heads=8),          # Pooling transformer encoder
+            TransformerEncoder(along_dim="sample", feature_dim=40, num_heads=8)           # Ray transformer encoder
+        )
+        self.TE_2_3 = nn.Sequential(
+            TransformerEncoder(along_dim="src", feature_dim=40, num_heads=8),          # Pooling transformer encoder
+            TransformerEncoder(along_dim="sample", feature_dim=40, num_heads=8)           # Ray transformer encoder
         )
         self.dim_linear_2 = nn.Linear(40, 20)
         # (N_rays, N_s, N_src, 20)
@@ -53,9 +69,13 @@ class NerFormerArchitecture(nn.Module):
         x = self.linear_1(input_tensor)     # (N_rays, N_s, N_src, 80)
 
         x = self.TE_1(x)                    # (N_rays, N_s, N_src, 80)
+        x = self.TE_1_2(x)                    # (N_rays, N_s, N_src, 80)
+        x = self.TE_1_3(x)                    # (N_rays, N_s, N_src, 80)
         x = self.dim_linear_1(x)              # (N_rays, N_s, N_src, 40)
 
         x = self.TE_2(x)                    # (N_rays, N_s, N_src, 40)
+        x = self.TE_2_2(x)                    # (N_rays, N_s, N_src, 40)
+        x = self.TE_2_3(x)                    # (N_rays, N_s, N_src, 40)
         x = self.dim_linear_2(x)              # (N_rays, N_s, N_src, 20)
         
         # weighted sum along dim 1

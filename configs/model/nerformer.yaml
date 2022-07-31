@@ -1,0 +1,38 @@
+_target_: src.models.model.NerFormer
+# _target_: src.models.camera_optim_model.CameraOptimNerFormer
+
+# dataset: nerf_synthetic
+dataset: co3d
+
+pe_dim: 10
+
+N_src: 3
+
+N_rays: 800
+ray_sampling_mode: center
+center_ratio: 0.8
+
+N_samples: 32
+N_importance: 16
+inv_uniform: False
+det: False
+
+lr: 0.0001
+
+chunk_size: 4000
+render_stride: 1
+
+lambda_mask: 0.2
+lambda_pose: 0.1
+lambda_ray: 0.2
+
+log_img: True
+log_img_step: 500
+log_loss_step: 100
+log_weight_step: 2000
+epoch_val_img: 20
+val_len: 5
+
+model_type: nerformer
+with_colmap: False
+proj_ray_dist_threshold: 5.

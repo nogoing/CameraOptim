@@ -1,14 +1,9 @@
 tensorboad:
   _target_: pytorch_lightning.loggers.tensorboard.TensorBoardLogger
   save_dir: "tensorboard/"
-  name: null
-  version: ${name}
+  name: donut_single_1
+  # version: ${name}
+  version: nerformer
   log_graph: False
   default_hp_metric: True
   prefix: ""
-
-  log_img: True
-  log_img_step: 2000
-  epoch_val_img: 2
-  log_loss_step: 100
-  log_weight_step: 2000
